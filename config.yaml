@@ -1,0 +1,24 @@
+app:
+  name: clip-pilot
+  version: 0.1.0
+  description: MVP API for AI short video highlight upload tasks.
+
+storage:
+  tasks_root: outputs/tasks
+  raw_videos_root: data/raw_videos
+
+video:
+  allowed_extensions:
+    - .mp4
+    - .mov
+    - .mkv
+  min_duration_seconds: 180
+  max_duration_seconds: 600
+
+asr:
+  provider: mock
+  whisper_model: base
+
+highlight:
+  min_candidate_duration: 8.0
+  max_candidate_duration: 20.0

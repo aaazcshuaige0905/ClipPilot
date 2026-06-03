@@ -1,0 +1,6 @@
+fastapi==0.116.1
+uvicorn==0.35.0
+python-multipart==0.0.20
+moviepy==2.2.1
+PyYAML==6.0.2
+pytest==8.3.5
