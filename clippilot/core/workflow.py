@@ -13,6 +13,8 @@ from clippilot.agents.video_understanding_agent import analyze_video_understandi
 from clippilot.core.states import TaskStatus, WorkflowStage
 from clippilot.core.task_context import TaskContext
 from clippilot.harness.trace_logger import log_stage_transition
+from clippilot.rag.query_builder import build_retrieval_query
+from clippilot.rag.retrieve import retrieve_context
 from clippilot.harness.validators import (
     validate_candidates_not_empty,
     validate_output_file_exists,
@@ -274,12 +276,6 @@ def _process_video_understanding(
         context.project_state.timeline = timeline
         context.project_state.highlight_candidates_llm = highlight_candidates_llm
         context.project_state.paths.timeline = storage.as_relative(timeline_path)
-        context.project_state.retrieved_context = {
-            "provider": timeline.provider,
-            "model": timeline.model,
-            "generation_mode": timeline.generation_mode,
-            "highlight_candidate_count": len(highlight_candidates_llm),
-        }
     _register_artifact_once(
         context,
         "video_timeline",
@@ -289,6 +285,46 @@ def _process_video_understanding(
     log_stage_transition(context, WorkflowStage.VIDEO_UNDERSTOOD.value, "Video understanding completed and timeline saved.")
     _save_project_state(storage, context)
     return timeline, highlight_candidates_llm
+
+
+def _process_retrieved_context(
+    storage: TaskStorage,
+    context: TaskContext,
+    settings: AppSettings,
+) -> None:
+    """Retrieve strategy context for the planner and persist it with diagnostics."""
+
+    if context.project_state is None or not settings.rag_enabled:
+        return
+
+    retrieval_query = build_retrieval_query(
+        user_request=context.request,
+        fine_grained_units=context.project_state.fine_grained_units,
+        settings=settings,
+    )
+    retrieved_context = retrieve_context(query=retrieval_query, settings=settings)
+    retrieved_context_path = storage.save_retrieved_context(retrieved_context, context.paths)
+    retrieval_trace_path = storage.save_retrieval_trace(retrieved_context.trace, context.paths)
+    context.project_state.retrieved_context = retrieved_context
+    context.project_state.paths.retrieved_context = storage.as_relative(retrieved_context_path)
+    _register_artifact_once(
+        context,
+        "retrieved_context",
+        storage.as_relative(retrieved_context_path),
+        stage=WorkflowStage.RAG_CONTEXT_RETRIEVED.value,
+    )
+    _register_artifact_once(
+        context,
+        "retrieval_trace",
+        storage.as_relative(retrieval_trace_path),
+        stage=WorkflowStage.RAG_CONTEXT_RETRIEVED.value,
+    )
+    log_stage_transition(
+        context,
+        WorkflowStage.RAG_CONTEXT_RETRIEVED.value,
+        f"Retrieved {len(retrieved_context.chunks)} strategy chunks for planner context.",
+    )
+    _save_project_state(storage, context)
 
 
 def _process_highlight_candidates(
@@ -337,6 +373,7 @@ def _process_editing_plan(
         video_info=video_info,
         transcript=transcript,
         candidates=candidates,
+        retrieved_context=context.project_state.retrieved_context if context.project_state is not None else None,
     )
     editing_plan_path = storage.save_editing_plan(editing_plan, context.paths)
     validate_output_file_exists(editing_plan_path)
@@ -472,6 +509,9 @@ def _build_task_result(
         editing_plan_path=storage.as_relative(context.paths.editing_plan_path),
         project_state_path=storage.as_relative(context.paths.project_state_path),
         timeline_path=storage.as_relative(context.paths.timeline_path) if context.paths.timeline_path.exists() else None,
+        retrieved_context_path=(
+            storage.as_relative(context.paths.retrieved_context_path) if context.paths.retrieved_context_path.exists() else None
+        ),
         execution_report_path=storage.as_relative(context.paths.execution_report_path),
         final_video_path=_as_relative_output_path(storage, execution_report.final_video_path),
         subtitle_path=_as_relative_output_path(storage, execution_report.subtitle_path),
@@ -548,6 +588,7 @@ def run_stage1_workflow(
         video_info = _process_video_info(storage=storage, context=context, settings=active_settings)
         _process_audio(storage=storage, context=context, video_info=video_info)
         transcript = _process_transcript(storage=storage, context=context, settings=active_settings)
+        _process_retrieved_context(storage=storage, context=context, settings=active_settings)
         _process_video_understanding(
             storage=storage,
             context=context,

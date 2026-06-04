@@ -23,6 +23,24 @@ class AppSettings:
     whisper_model: str
     highlight_min_candidate_duration: float
     highlight_max_candidate_duration: float
+    rag_enabled: bool
+    rag_knowledge_dir: Path
+    rag_data_dir: Path
+    rag_chroma_dir: Path
+    rag_bm25_dir: Path
+    rag_manifest_dir: Path
+    rag_collection_name: str
+    rag_top_k_dense: int
+    rag_top_k_bm25: int
+    rag_top_k_final: int
+    rag_dense_weight: float
+    rag_bm25_weight: float
+    rag_metadata_weight: float
+    qwen_embedding_model: str
+    qwen_embedding_dimensions: int
+    qwen_embedding_base_url: str
+    qwen_embedding_api_path: str
+    qwen_api_key: str
 
 
 @dataclass(frozen=True)
@@ -46,6 +64,8 @@ class TaskPaths:
     video_info_path: Path
     transcript_json_path: Path
     timeline_path: Path
+    retrieved_context_path: Path
+    retrieval_trace_path: Path
     highlight_candidates_path: Path
     editing_plan_path: Path
     execution_report_path: Path
@@ -85,6 +105,24 @@ def _default_config() -> dict:
             "min_candidate_duration": 8.0,
             "max_candidate_duration": 20.0,
         },
+        "rag": {
+            "enabled": True,
+            "knowledge_dir": "clippilot/rag/knowledge",
+            "data_dir": "data/rag",
+            "collection_name": "clip_pilot_strategy",
+            "top_k_dense": 8,
+            "top_k_bm25": 8,
+            "top_k_final": 3,
+            "dense_weight": 0.55,
+            "bm25_weight": 0.30,
+            "metadata_weight": 0.15,
+        },
+        "embedding": {
+            "qwen_model": "text-embedding-v4",
+            "qwen_dimensions": 1024,
+            "qwen_base_url": "https://dashscope.aliyuncs.com",
+            "qwen_embedding_api_path": "/api/v1/services/embeddings/text-embedding/text-embedding",
+        },
     }
 
 
@@ -113,6 +151,10 @@ def load_settings(project_root: Path | None = None) -> AppSettings:
     video_config = config["video"]
     asr_config = config["asr"]
     highlight_config = config["highlight"]
+    rag_config = config["rag"]
+    embedding_config = config["embedding"]
+    qwen_api_key = os.getenv("DASHSCOPE_API_KEY", os.getenv("CLIP_PILOT_QWEN_API_KEY", "")).strip()
+    qwen_base_url = os.getenv("CLIP_PILOT_QWEN_EMBEDDING_BASE_URL", embedding_config["qwen_base_url"]).strip()
     return AppSettings(
         project_root=resolved_root,
         config_path=config_path,
@@ -128,6 +170,25 @@ def load_settings(project_root: Path | None = None) -> AppSettings:
         whisper_model=os.getenv("CLIP_PILOT_WHISPER_MODEL", asr_config["whisper_model"]).strip() or "base",
         highlight_min_candidate_duration=float(highlight_config["min_candidate_duration"]),
         highlight_max_candidate_duration=float(highlight_config["max_candidate_duration"]),
+        rag_enabled=bool(rag_config["enabled"]),
+        rag_knowledge_dir=resolved_root / rag_config["knowledge_dir"],
+        rag_data_dir=resolved_root / rag_config["data_dir"],
+        rag_chroma_dir=(resolved_root / rag_config["data_dir"]) / "chroma",
+        rag_bm25_dir=(resolved_root / rag_config["data_dir"]) / "bm25",
+        rag_manifest_dir=(resolved_root / rag_config["data_dir"]) / "manifests",
+        rag_collection_name=str(rag_config["collection_name"]),
+        rag_top_k_dense=int(rag_config["top_k_dense"]),
+        rag_top_k_bm25=int(rag_config["top_k_bm25"]),
+        rag_top_k_final=int(rag_config["top_k_final"]),
+        rag_dense_weight=float(rag_config["dense_weight"]),
+        rag_bm25_weight=float(rag_config["bm25_weight"]),
+        rag_metadata_weight=float(rag_config["metadata_weight"]),
+        qwen_embedding_model=os.getenv("CLIP_PILOT_QWEN_EMBEDDING_MODEL", embedding_config["qwen_model"]).strip() or "text-embedding-v4",
+        qwen_embedding_dimensions=int(os.getenv("CLIP_PILOT_QWEN_EMBEDDING_DIMENSIONS", str(embedding_config["qwen_dimensions"]))),
+        qwen_embedding_base_url=qwen_base_url or "https://dashscope.aliyuncs.com",
+        qwen_embedding_api_path=os.getenv("CLIP_PILOT_QWEN_EMBEDDING_API_PATH", embedding_config["qwen_embedding_api_path"]).strip()
+        or "/api/v1/services/embeddings/text-embedding/text-embedding",
+        qwen_api_key=qwen_api_key,
     )
 
 
@@ -136,6 +197,11 @@ def ensure_base_directories(settings: AppSettings) -> None:
 
     settings.tasks_root_dir.mkdir(parents=True, exist_ok=True)
     settings.raw_videos_root.mkdir(parents=True, exist_ok=True)
+    if settings.rag_enabled:
+        settings.rag_data_dir.mkdir(parents=True, exist_ok=True)
+        settings.rag_chroma_dir.mkdir(parents=True, exist_ok=True)
+        settings.rag_bm25_dir.mkdir(parents=True, exist_ok=True)
+        settings.rag_manifest_dir.mkdir(parents=True, exist_ok=True)
 
 
 def build_task_paths(settings: AppSettings, task_id: str, original_file_name: str) -> TaskPaths:
@@ -174,6 +240,8 @@ def build_task_paths(settings: AppSettings, task_id: str, original_file_name: st
         video_info_path=metadata_dir / "video_info.json",
         transcript_json_path=transcript_dir / "transcript.json",
         timeline_path=understanding_dir / "timeline.json",
+        retrieved_context_path=understanding_dir / "retrieved_context.json",
+        retrieval_trace_path=understanding_dir / "retrieval_trace.json",
         highlight_candidates_path=highlights_dir / "candidates.json",
         editing_plan_path=plan_dir / "editing_plan.json",
         execution_report_path=plan_dir / "execution_report.json",

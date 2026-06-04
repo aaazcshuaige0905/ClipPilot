@@ -19,6 +19,7 @@ class WorkflowStage(StrEnum):
     VIDEO_INFO_EXTRACTED = "video_info_extracted"
     TRANSCRIBED = "transcribed"
     PREPROCESSED = "preprocessed"
+    RAG_CONTEXT_RETRIEVED = "rag_context_retrieved"
     VIDEO_UNDERSTOOD = "video_understood"
     HIGHLIGHT_CANDIDATES_GENERATED = "highlight_candidates_generated"
     EDITING_PLAN_GENERATED = "editing_plan_generated"

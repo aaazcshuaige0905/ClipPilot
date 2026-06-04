@@ -4,3 +4,4 @@ python-multipart==0.0.20
 moviepy==2.2.1
 PyYAML==6.0.2
 pytest==8.3.5
+chromadb>=0.5,<0.7

@@ -1,3 +1,18 @@
 # Platform Rules
 
-Reserved for future platform-specific short-video publishing rules.
+## Douyin Hook
+
+- 抖音短视频优先在前3秒给出结果预告、反差点或核心结论。
+- 强节奏内容优先使用 3 到 12 秒的高密度片段，避免冗长铺垫。
+- 当目标时长在 15 到 30 秒之间时，优先保留冲突、结果、反问句。
+
+## Bilibili Knowledge
+
+- Bilibili 知识型短剪允许稍完整的上下文，但开头仍应尽快交代主题。
+- 30 秒左右的知识向短视频应保留一个明确论点和一个可执行建议。
+- 如果原片段信息密度高，可以保留一句过渡解释，避免纯情绪化跳切。
+
+## Xiaohongshu Tone
+
+- 小红书更偏生活方式表达，适合更柔和、更第一人称的讲述节奏。
+- 治愈风格内容优先保留自然停顿和情绪递进，不要过度切碎。

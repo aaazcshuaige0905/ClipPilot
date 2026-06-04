@@ -2,6 +2,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field, model_validator
 
+from clippilot.rag.schemas import RetrievedContext
 from clippilot.schemas.transcript import TranscriptResult
 from clippilot.schemas.user_request import UserRequest
 from clippilot.schemas.video_info import VideoInfo
@@ -14,6 +15,7 @@ class ProjectPaths(BaseModel):
     audio: str | None = None
     transcript: str | None = None
     timeline: str | None = None
+    retrieved_context: str | None = None
     final_video: str | None = None
 
 
@@ -180,7 +182,7 @@ class ProjectState(BaseModel):
     transcript: TranscriptResult | None = None
     fine_grained_units: list[FineGrainedUnit] | None = None
     content_analysis: ContentAnalysis | None = None
-    retrieved_context: dict[str, Any] | None = None
+    retrieved_context: RetrievedContext | None = None
     timeline: VideoTimeline | None = None
     highlight_candidates_llm: list[LLMHighlightCandidate] | None = None
     validation_result: dict[str, Any] | None = None

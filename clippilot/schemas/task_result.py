@@ -35,6 +35,7 @@ class TaskResult(BaseModel):
     editing_plan_path: str
     project_state_path: str | None = None
     timeline_path: str | None = None
+    retrieved_context_path: str | None = None
     execution_report_path: str | None = None
     final_video_path: str | None = None
     subtitle_path: str | None = None

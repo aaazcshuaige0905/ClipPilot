@@ -1,3 +1,18 @@
 # Editing Templates
 
-Reserved for future editing strategy templates.
+## Fast Hook Template
+
+- 开头优先选择一句结论、惊讶点或强对比表达。
+- 第一条 clip 最好控制在 3 到 8 秒之间，便于快速建立抓手。
+- 如果候选片段较长，优先裁掉铺垫句，保留结果句和关键词。
+
+## Knowledge Explainer Template
+
+- 中段应保留一条核心解释，不建议整段只保留结论而没有支撑。
+- 对 30 秒以内的知识型短视频，常见节奏是 hook -> 核心论点 -> 行动建议。
+- 多个片段拼接时，优先保证逻辑递进，而不是只看单片段分数。
+
+## Healing Story Template
+
+- 治愈风格内容可保留一句呼吸感更强的过渡，不必每段都硬切。
+- 情绪峰值可以放在前半段，但结尾需要留一条收束句避免戛然而止。

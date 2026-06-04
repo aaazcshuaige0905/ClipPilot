@@ -21,6 +21,7 @@ from clippilot.core.task_context import TaskContext
 from clippilot.core.workflow import (
     _build_task_result,
     _process_execution_report,
+    _process_retrieved_context,
     _process_review_report,
     _process_video_understanding,
 )
@@ -61,6 +62,24 @@ def _build_test_settings(root: Path) -> AppSettings:
         whisper_model="base",
         highlight_min_candidate_duration=8.0,
         highlight_max_candidate_duration=20.0,
+        rag_enabled=True,
+        rag_knowledge_dir=root / "clippilot" / "rag" / "knowledge",
+        rag_data_dir=root / "data" / "rag",
+        rag_chroma_dir=root / "data" / "rag" / "chroma",
+        rag_bm25_dir=root / "data" / "rag" / "bm25",
+        rag_manifest_dir=root / "data" / "rag" / "manifests",
+        rag_collection_name="clip_pilot_strategy",
+        rag_top_k_dense=8,
+        rag_top_k_bm25=8,
+        rag_top_k_final=3,
+        rag_dense_weight=0.55,
+        rag_bm25_weight=0.30,
+        rag_metadata_weight=0.15,
+        qwen_embedding_model="text-embedding-v4",
+        qwen_embedding_dimensions=1024,
+        qwen_embedding_base_url="https://dashscope.aliyuncs.com",
+        qwen_embedding_api_path="/api/v1/services/embeddings/text-embedding/text-embedding",
+        qwen_api_key="",
     )
 
 
@@ -146,6 +165,7 @@ def test_build_task_result_includes_execution_output_paths() -> None:
     assert task_result.subtitle_path == "outputs/tasks/task123/final/subtitles.srt"
     assert task_result.burned_video_path == "outputs/tasks/task123/final/final_video_burned.mp4"
     assert task_result.project_state_path == "outputs/tasks/task123/project_state.json"
+    assert task_result.retrieved_context_path is None
 
 
 def test_process_execution_report_registers_generated_artifacts(monkeypatch) -> None:
@@ -312,3 +332,48 @@ def test_process_video_understanding_persists_timeline_and_project_state() -> No
     assert loaded_state.paths.timeline == "outputs/tasks/task123/understanding/timeline.json"
     assert loaded_state.highlight_candidates_llm is not None
     assert len(highlight_candidates) == 2
+
+
+def test_process_retrieved_context_persists_strategy_artifacts() -> None:
+    """Ensure workflow saves retrieved strategy context for planner consumption."""
+
+    settings = _build_test_settings(_workspace_root("workflow_retrieved_context"))
+    knowledge_dir = settings.rag_knowledge_dir
+    knowledge_dir.mkdir(parents=True, exist_ok=True)
+    (knowledge_dir / "platform_rules.md").write_text(
+        "# Douyin Rules\n\n## Hook\n\n- 抖音前3秒要快速给出结果预告。\n",
+        encoding="utf-8",
+    )
+
+    storage = TaskStorage(settings)
+    task_paths = storage.create_task_paths("task123", "source.mp4")
+    project_state = ProjectState(
+        project_id="task123",
+        user_request=_build_request(),
+        paths=ProjectPaths(raw_video="outputs/tasks/task123/input/source.mp4"),
+        fine_grained_units=[
+            FineGrainedUnit(
+                unit_id="unit_001",
+                start=0.0,
+                end=4.0,
+                duration=4.0,
+                text="Opening scene with hook.",
+                keywords=["opening", "hook"],
+            )
+        ],
+    )
+    context = TaskContext(
+        task_id="task123",
+        request=_build_request(),
+        paths=task_paths,
+        project_state=project_state,
+    )
+
+    _process_retrieved_context(storage=storage, context=context, settings=settings)
+    loaded_state = storage.load_project_state("task123")
+
+    assert task_paths.retrieved_context_path.exists()
+    assert task_paths.retrieval_trace_path.exists()
+    assert loaded_state.retrieved_context is not None
+    assert loaded_state.paths.retrieved_context == "outputs/tasks/task123/understanding/retrieved_context.json"
+    assert any(artifact.name == "retrieved_context" for artifact in context.artifacts)

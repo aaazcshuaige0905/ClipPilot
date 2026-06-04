@@ -22,3 +22,21 @@ asr:
 highlight:
   min_candidate_duration: 8.0
   max_candidate_duration: 20.0
+
+rag:
+  enabled: true
+  knowledge_dir: clippilot/rag/knowledge
+  data_dir: data/rag
+  collection_name: clip_pilot_strategy
+  top_k_dense: 8
+  top_k_bm25: 8
+  top_k_final: 3
+  dense_weight: 0.55
+  bm25_weight: 0.30
+  metadata_weight: 0.15
+
+embedding:
+  qwen_model: text-embedding-v4
+  qwen_dimensions: 1024
+  qwen_base_url: https://dashscope.aliyuncs.com
+  qwen_embedding_api_path: /api/v1/services/embeddings/text-embedding/text-embedding

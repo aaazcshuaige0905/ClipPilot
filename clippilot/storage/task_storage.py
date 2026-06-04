@@ -86,6 +86,16 @@ class TaskStorage:
 
         return self.save_model(timeline, task_paths.timeline_path)
 
+    def save_retrieved_context(self, retrieved_context: BaseModel | dict, task_paths: TaskPaths) -> Path:
+        """Persist retrieved planner context in the structured task directory."""
+
+        return self.save_model(retrieved_context, task_paths.retrieved_context_path)
+
+    def save_retrieval_trace(self, retrieval_trace: BaseModel | dict, task_paths: TaskPaths) -> Path:
+        """Persist retrieval diagnostics in the structured task directory."""
+
+        return self.save_model(retrieval_trace, task_paths.retrieval_trace_path)
+
     def save_candidates(self, candidates: BaseModel | dict, task_paths: TaskPaths) -> Path:
         """Persist highlight candidates in the structured task directory."""
 

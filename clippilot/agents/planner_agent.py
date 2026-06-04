@@ -1,5 +1,6 @@
 from itertools import combinations
 
+from clippilot.rag.schemas import RetrievedContext
 from clippilot.schemas.editing_plan import (
     EditingClip,
     EditingPlan,
@@ -128,10 +129,12 @@ def _generate_transcript_fallback_candidates(transcript: TranscriptResult) -> li
 def _rank_candidates(
     candidates: HighlightCandidatesResult,
     transcript: TranscriptResult,
+    retrieved_context: RetrievedContext | None = None,
 ) -> tuple[list[HighlightCandidate], bool]:
     """Create the ranked candidate pool and indicate whether transcript fallback was used."""
 
     unique_candidates = _deduplicate_candidates(candidates.candidates)
+    _apply_strategy_context(unique_candidates, retrieved_context)
     unique_candidates.sort(key=lambda item: item.score, reverse=True)
 
     fallback_used = False
@@ -147,6 +150,28 @@ def _rank_candidates(
 
     unique_candidates.sort(key=lambda item: item.score, reverse=True)
     return unique_candidates, fallback_used
+
+
+def _apply_strategy_context(
+    candidates: list[HighlightCandidate],
+    retrieved_context: RetrievedContext | None,
+) -> None:
+    """Apply a lightweight score bonus from retrieved strategy context."""
+
+    if not retrieved_context or not retrieved_context.chunks:
+        return
+
+    strategy_types = {chunk.strategy_type for chunk in retrieved_context.chunks}
+    for candidate in candidates:
+        bonus = 0.0
+        duration = round(candidate.end - candidate.start, 2)
+        if "hook_rule" in strategy_types and _is_hook_candidate(candidate):
+            bonus += 0.08
+        if "pacing_rule" in strategy_types and 3.0 <= duration <= 12.0:
+            bonus += 0.04
+        if "platform_rule" in strategy_types and candidate.start <= 30:
+            bonus += 0.03
+        candidate.score = round(min(1.0, candidate.score + bonus), 4)
 
 
 def _append_fallback_candidates(
@@ -234,6 +259,7 @@ def _build_editing_notes(
     clips: list[EditingClip],
     fallback_used: bool,
     source_candidate_count: int,
+    retrieved_context: RetrievedContext | None = None,
 ) -> tuple[list[str], list[str]]:
     """Build user-facing editing notes and warnings for the generated plan."""
 
@@ -244,6 +270,9 @@ def _build_editing_notes(
         f"Selected {len(clips)} clips from {source_candidate_count} ranked candidates.",
     ]
     warnings: list[str] = []
+    if retrieved_context and retrieved_context.chunks:
+        top_titles = ", ".join(chunk.title for chunk in retrieved_context.chunks[:3])
+        notes.append(f"Planner retrieved {len(retrieved_context.chunks)} strategy chunks: {top_titles}.")
 
     if clips and clips[0].purpose == "hook":
         notes.append("The first clip is optimized as a hook-style opening segment.")
@@ -262,10 +291,15 @@ def build_editing_plan(
     video_info: VideoInfo,
     transcript: TranscriptResult,
     candidates: HighlightCandidatesResult,
+    retrieved_context: RetrievedContext | None = None,
 ) -> EditingPlan:
     """Build an executable timeline plan from ranked highlights and transcript fallback clips."""
 
-    ranked_candidates, fallback_used = _rank_candidates(candidates=candidates, transcript=transcript)
+    ranked_candidates, fallback_used = _rank_candidates(
+        candidates=candidates,
+        transcript=transcript,
+        retrieved_context=retrieved_context,
+    )
     selected_candidates = _find_best_plan_candidates(ranked_candidates=ranked_candidates, target_duration=user_request.target_duration)
     selected_duration = round(sum(item.end - item.start for item in selected_candidates), 2)
 
@@ -289,6 +323,7 @@ def build_editing_plan(
         clips=clips,
         fallback_used=fallback_used,
         source_candidate_count=len(candidates.candidates),
+        retrieved_context=retrieved_context,
     )
 
     return EditingPlan(

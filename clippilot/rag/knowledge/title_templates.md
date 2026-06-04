@@ -1,3 +1,16 @@
 # Title Templates
 
-Reserved for future title and hook generation templates.
+## Result First
+
+- 先给结果，再补原因，适合 hook 型开头和高反差表达。
+- 例如：`我试了 30 天，真正有效的只有这一招`
+
+## Question Driven
+
+- 用反问句或常见误区切入，适合知识讲解和观点类短视频。
+- 例如：`为什么很多人剪了半天，开头还是留不住人？`
+
+## Emotional Closing
+
+- 结尾标题或封面文案可以补一条情绪收束，适合治愈向内容。
+- 例如：`你以为是放下，其实是终于不再为难自己`
