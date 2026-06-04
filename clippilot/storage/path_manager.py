@@ -31,17 +31,21 @@ class TaskPaths:
 
     task_root: Path
     input_dir: Path
+    audio_dir: Path
     metadata_dir: Path
     transcript_dir: Path
     highlights_dir: Path
+    understanding_dir: Path
     clips_dir: Path
     final_dir: Path
     plan_dir: Path
     review_dir: Path
     trace_dir: Path
     source_video_path: Path
+    audio_path: Path
     video_info_path: Path
     transcript_json_path: Path
+    timeline_path: Path
     highlight_candidates_path: Path
     editing_plan_path: Path
     execution_report_path: Path
@@ -49,6 +53,7 @@ class TaskPaths:
     final_video_path: Path
     subtitle_path: Path
     burned_video_path: Path
+    project_state_path: Path
     task_result_path: Path
     artifact_manifest_path: Path
     trace_log_path: Path
@@ -140,9 +145,11 @@ def build_task_paths(settings: AppSettings, task_id: str, original_file_name: st
     suffix = Path(source_name).suffix.lower() or ".mp4"
     task_root = settings.tasks_root_dir / task_id
     input_dir = task_root / "input"
+    audio_dir = task_root / "audio"
     metadata_dir = task_root / "metadata"
     transcript_dir = task_root / "transcript"
     highlights_dir = task_root / "highlights"
+    understanding_dir = task_root / "understanding"
     clips_dir = task_root / "clips"
     final_dir = task_root / "final"
     plan_dir = task_root / "plan"
@@ -152,17 +159,21 @@ def build_task_paths(settings: AppSettings, task_id: str, original_file_name: st
     return TaskPaths(
         task_root=task_root,
         input_dir=input_dir,
+        audio_dir=audio_dir,
         metadata_dir=metadata_dir,
         transcript_dir=transcript_dir,
         highlights_dir=highlights_dir,
+        understanding_dir=understanding_dir,
         clips_dir=clips_dir,
         final_dir=final_dir,
         plan_dir=plan_dir,
         review_dir=review_dir,
         trace_dir=trace_dir,
         source_video_path=input_dir / f"source{suffix}",
+        audio_path=audio_dir / "source.wav",
         video_info_path=metadata_dir / "video_info.json",
         transcript_json_path=transcript_dir / "transcript.json",
+        timeline_path=understanding_dir / "timeline.json",
         highlight_candidates_path=highlights_dir / "candidates.json",
         editing_plan_path=plan_dir / "editing_plan.json",
         execution_report_path=plan_dir / "execution_report.json",
@@ -170,6 +181,7 @@ def build_task_paths(settings: AppSettings, task_id: str, original_file_name: st
         final_video_path=final_dir / "final_video.mp4",
         subtitle_path=final_dir / "subtitles.srt",
         burned_video_path=final_dir / "final_video_burned.mp4",
+        project_state_path=task_root / "project_state.json",
         task_result_path=task_root / "task_result.json",
         artifact_manifest_path=task_root / "artifact_manifest.json",
         trace_log_path=trace_dir / "workflow_trace.jsonl",

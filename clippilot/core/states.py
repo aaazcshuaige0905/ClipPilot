@@ -15,8 +15,11 @@ class WorkflowStage(StrEnum):
 
     CREATED = "created"
     UPLOADED = "uploaded"
+    AUDIO_EXTRACTED = "audio_extracted"
     VIDEO_INFO_EXTRACTED = "video_info_extracted"
     TRANSCRIBED = "transcribed"
+    PREPROCESSED = "preprocessed"
+    VIDEO_UNDERSTOOD = "video_understood"
     HIGHLIGHT_CANDIDATES_GENERATED = "highlight_candidates_generated"
     EDITING_PLAN_GENERATED = "editing_plan_generated"
     EXECUTION_REPORT_GENERATED = "execution_report_generated"

@@ -20,6 +20,7 @@ from clippilot.schemas.task_result import (
     TaskStatusResponse,
     TaskSummary,
 )
+from clippilot.schemas.project_state import ProjectState
 from clippilot.storage.json_io import read_json_file, write_json_file
 from clippilot.storage.path_manager import AppSettings, TaskPaths, build_task_paths, ensure_base_directories, load_settings
 
@@ -43,9 +44,11 @@ class TaskStorage:
         for directory in (
             task_paths.task_root,
             task_paths.input_dir,
+            task_paths.audio_dir,
             task_paths.metadata_dir,
             task_paths.transcript_dir,
             task_paths.highlights_dir,
+            task_paths.understanding_dir,
             task_paths.clips_dir,
             task_paths.final_dir,
             task_paths.plan_dir,
@@ -78,6 +81,11 @@ class TaskStorage:
 
         return self.save_model(transcript, task_paths.transcript_json_path)
 
+    def save_timeline(self, timeline: BaseModel | dict, task_paths: TaskPaths) -> Path:
+        """Persist video-understanding timeline artifacts in the structured task directory."""
+
+        return self.save_model(timeline, task_paths.timeline_path)
+
     def save_candidates(self, candidates: BaseModel | dict, task_paths: TaskPaths) -> Path:
         """Persist highlight candidates in the structured task directory."""
 
@@ -92,6 +100,11 @@ class TaskStorage:
         """Persist the public workflow result inside the task root for debugging."""
 
         return self.save_model(task_result, task_paths.task_result_path)
+
+    def save_project_state(self, project_state: BaseModel | dict, task_paths: TaskPaths) -> Path:
+        """Persist the shared global workflow state inside the task root."""
+
+        return self.save_model(project_state, task_paths.project_state_path)
 
     def save_editing_plan(self, editing_plan: BaseModel | dict, task_paths: TaskPaths) -> Path:
         """Persist an editing plan artifact inside the structured task directory."""
@@ -148,6 +161,14 @@ class TaskStorage:
         if not task_paths.artifact_manifest_path.exists():
             raise ClipPilotStorageError(f"Artifact manifest was not found for task_id={task_id}.")
         return TaskArtifactManifest.model_validate(read_json_file(task_paths.artifact_manifest_path))
+
+    def load_project_state(self, task_id: str) -> ProjectState:
+        """Load the persisted global workflow state for a task."""
+
+        task_paths = self.task_paths_for(task_id)
+        if not task_paths.project_state_path.exists():
+            raise ClipPilotStorageError(f"Project state was not found for task_id={task_id}.")
+        return ProjectState.model_validate(read_json_file(task_paths.project_state_path))
 
     def load_task_status(self, task_id: str) -> TaskStatusResponse:
         """Load a full task status snapshot including task result and artifact manifest."""

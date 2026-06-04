@@ -18,12 +18,19 @@ _fake_moviepy_video_file_clip.VideoFileClip = _FakeVideoFileClip
 sys.modules.setdefault("moviepy.video.io.VideoFileClip", _fake_moviepy_video_file_clip)
 
 from clippilot.core.task_context import TaskContext
-from clippilot.core.workflow import _build_task_result, _process_execution_report, _process_review_report
+from clippilot.core.workflow import (
+    _build_task_result,
+    _process_execution_report,
+    _process_review_report,
+    _process_video_understanding,
+)
 from clippilot.schemas.editing_plan import EditingClip, EditingPlan
 from clippilot.schemas.execution_report import ExecutionReport
+from clippilot.schemas.project_state import FineGrainedUnit, ProjectPaths, ProjectState
 from clippilot.schemas.review_report import ReviewCheck, ReviewReport
 from clippilot.schemas.user_request import UserRequest
 from clippilot.schemas.video_info import VideoInfo
+from clippilot.schemas.transcript import TranscriptResult, TranscriptSegment
 from clippilot.storage.path_manager import AppSettings, load_settings
 from clippilot.storage.task_storage import TaskStorage
 
@@ -138,6 +145,7 @@ def test_build_task_result_includes_execution_output_paths() -> None:
     assert task_result.final_video_path == "outputs/tasks/task123/final/final_video.mp4"
     assert task_result.subtitle_path == "outputs/tasks/task123/final/subtitles.srt"
     assert task_result.burned_video_path == "outputs/tasks/task123/final/final_video_burned.mp4"
+    assert task_result.project_state_path == "outputs/tasks/task123/project_state.json"
 
 
 def test_process_execution_report_registers_generated_artifacts(monkeypatch) -> None:
@@ -232,3 +240,75 @@ def test_process_review_report_saves_real_review_output(monkeypatch) -> None:
     assert saved_report.score == 0.9
     assert task_paths.review_report_path.exists()
     assert any(artifact.name == "review_report" for artifact in context.artifacts)
+
+
+def test_process_video_understanding_persists_timeline_and_project_state() -> None:
+    """Ensure the video understanding step writes timeline output into the shared project state."""
+
+    settings = _build_test_settings(_workspace_root("workflow_video_understanding"))
+    storage = TaskStorage(settings)
+    task_paths = storage.create_task_paths("task123", "source.mp4")
+    project_state = ProjectState(
+        project_id="task123",
+        user_request=_build_request(),
+        paths=ProjectPaths(raw_video="outputs/tasks/task123/input/source.mp4"),
+        fine_grained_units=[
+            FineGrainedUnit(
+                unit_id="unit_001",
+                start=0.0,
+                end=5.0,
+                duration=5.0,
+                text="Opening scene.",
+                has_pause_after=True,
+                keywords=["opening"],
+            ),
+            FineGrainedUnit(
+                unit_id="unit_002",
+                start=5.4,
+                end=10.0,
+                duration=4.6,
+                text="Second scene.",
+                has_pause_before=True,
+                keywords=["second"],
+            ),
+        ],
+    )
+    context = TaskContext(
+        task_id="task123",
+        request=_build_request(),
+        paths=task_paths,
+        project_state=project_state,
+    )
+    video_info = VideoInfo(
+        duration_seconds=300.0,
+        width=1920,
+        height=1080,
+        fps=30.0,
+        has_audio=True,
+        file_size_mb=120.0,
+        source_path=str(task_paths.source_video_path),
+    )
+    transcript = TranscriptResult(
+        video_id="task123",
+        segments=[
+            TranscriptSegment(start=0.0, end=5.0, text="Opening scene."),
+            TranscriptSegment(start=5.0, end=10.0, text="Second scene."),
+        ],
+        full_text="Opening scene. Second scene.",
+        provider="mock",
+    )
+
+    timeline, highlight_candidates = _process_video_understanding(
+        storage=storage,
+        context=context,
+        video_info=video_info,
+        transcript=transcript,
+    )
+    loaded_state = storage.load_project_state("task123")
+
+    assert timeline.provider == "qwen"
+    assert task_paths.timeline_path.exists()
+    assert loaded_state.timeline is not None
+    assert loaded_state.paths.timeline == "outputs/tasks/task123/understanding/timeline.json"
+    assert loaded_state.highlight_candidates_llm is not None
+    assert len(highlight_candidates) == 2
