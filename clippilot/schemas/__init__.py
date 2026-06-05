@@ -1,6 +1,8 @@
 from clippilot.schemas.agent_trace import AgentTrace
-from clippilot.schemas.editing_plan import EditingClip, EditingPlan, HighlightCandidate, HighlightCandidatesResult
-from clippilot.schemas.execution_report import ExecutionClipResult, ExecutionReport
+from clippilot.schemas.editing_plan import EditingPlan, HighlightCandidate, HighlightCandidatesResult
+from clippilot.schemas.execution_report import ExecutionItemResult, ExecutionReport
+from clippilot.schemas.planning_context import CompressedPlanningContext
+from clippilot.schemas.revision_request import RevisionRequest
 from clippilot.schemas.review_report import ReviewCheck, ReviewReport
 from clippilot.schemas.task_result import (
     TaskArtifact,
@@ -16,12 +18,13 @@ from clippilot.schemas.video_info import VideoInfo
 
 __all__ = [
     "AgentTrace",
-    "EditingClip",
     "EditingPlan",
-    "ExecutionClipResult",
+    "ExecutionItemResult",
     "ExecutionReport",
     "HighlightCandidate",
     "HighlightCandidatesResult",
+    "CompressedPlanningContext",
+    "RevisionRequest",
     "ReviewCheck",
     "ReviewReport",
     "TaskArtifact",

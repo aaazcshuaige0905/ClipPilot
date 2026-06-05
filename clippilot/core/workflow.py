@@ -10,6 +10,12 @@ from clippilot.agents.executor_agent import execute_editing_plan
 from clippilot.agents.planner_agent import build_editing_plan
 from clippilot.agents.review_agent import review_task_output
 from clippilot.agents.video_understanding_agent import analyze_video_understanding
+from clippilot.core.memory_manager import (
+    build_initial_planner_memory,
+    record_plan_generation,
+    record_retrieved_context,
+    record_review_outcome,
+)
 from clippilot.core.states import TaskStatus, WorkflowStage
 from clippilot.core.task_context import TaskContext
 from clippilot.harness.trace_logger import log_stage_transition
@@ -73,6 +79,21 @@ def _save_project_state(storage: TaskStorage, context: TaskContext) -> None:
         context,
         "project_state",
         storage.as_relative(context.paths.project_state_path),
+        stage=context.stage,
+    )
+
+
+def _save_planner_memory(storage: TaskStorage, context: TaskContext) -> None:
+    """Persist standalone planner short-term memory to its dedicated artifact path."""
+
+    if context.planner_memory is None:
+        return
+    context.planner_memory.touch()
+    storage.save_planner_memory(context.planner_memory, context.paths)
+    _register_artifact_once(
+        context,
+        "planner_memory",
+        storage.as_relative(context.paths.planner_memory_path),
         stage=context.stage,
     )
 
@@ -152,10 +173,18 @@ def _create_task_context(
         user_request=user_request,
         raw_video_path=task_paths.source_video_path,
     )
-    context = TaskContext(task_id=task_id, request=user_request, paths=task_paths, project_state=project_state)
+    planner_memory = build_initial_planner_memory(task_id=task_id, user_request=user_request)
+    context = TaskContext(
+        task_id=task_id,
+        request=user_request,
+        paths=task_paths,
+        project_state=project_state,
+        planner_memory=planner_memory,
+    )
     context.mark_status(TaskStatus.PROCESSING.value)
     context.add_trace(stage=WorkflowStage.CREATED.value, message="Global project state initialized.")
     _save_project_state(storage, context)
+    _save_planner_memory(storage, context)
     return context
 
 
@@ -324,6 +353,9 @@ def _process_retrieved_context(
         WorkflowStage.RAG_CONTEXT_RETRIEVED.value,
         f"Retrieved {len(retrieved_context.chunks)} strategy chunks for planner context.",
     )
+    if context.planner_memory is not None:
+        record_retrieved_context(context.planner_memory, retrieved_context)
+        _save_planner_memory(storage, context)
     _save_project_state(storage, context)
 
 
@@ -373,12 +405,18 @@ def _process_editing_plan(
         video_info=video_info,
         transcript=transcript,
         candidates=candidates,
+        fine_grained_units=context.project_state.fine_grained_units if context.project_state is not None else None,
+        timeline=context.project_state.timeline if context.project_state is not None else None,
+        llm_candidates=context.project_state.highlight_candidates_llm if context.project_state is not None else None,
         retrieved_context=context.project_state.retrieved_context if context.project_state is not None else None,
+        planner_memory=context.planner_memory,
     )
     editing_plan_path = storage.save_editing_plan(editing_plan, context.paths)
+    storage.save_plan_version(editing_plan, context.paths, editing_plan.plan_version)
     validate_output_file_exists(editing_plan_path)
-    if context.project_state is not None:
-        context.project_state.timeline = context.project_state.timeline or None
+    if context.planner_memory is not None:
+        record_plan_generation(context.planner_memory, editing_plan)
+        _save_planner_memory(storage, context)
     _register_artifact_once(
         context,
         "editing_plan",
@@ -412,12 +450,12 @@ def _process_execution_report(
         storage.as_relative(execution_report_path),
         stage=WorkflowStage.EXECUTION_REPORT_GENERATED.value,
     )
-    for clip_result in execution_report.clip_results:
-        if clip_result.success:
+    for item_result in execution_report.item_results:
+        if item_result.success:
             _register_artifact_once(
                 context,
-                f"clip_{clip_result.clip_id}",
-                storage.as_relative(Path(clip_result.clip_path)),
+                f"timeline_item_{item_result.item_id}",
+                storage.as_relative(Path(item_result.item_path)),
                 stage=WorkflowStage.EXECUTION_REPORT_GENERATED.value,
             )
     if context.paths.final_video_path.exists():
@@ -474,6 +512,9 @@ def _process_review_report(
     validate_output_file_exists(review_report_path)
     if context.project_state is not None:
         context.project_state.qc_report = review_report.model_dump()
+    if context.planner_memory is not None:
+        record_review_outcome(context.planner_memory, review_report)
+        _save_planner_memory(storage, context)
     _register_artifact_once(
         context,
         "review_report",
@@ -511,6 +552,9 @@ def _build_task_result(
         timeline_path=storage.as_relative(context.paths.timeline_path) if context.paths.timeline_path.exists() else None,
         retrieved_context_path=(
             storage.as_relative(context.paths.retrieved_context_path) if context.paths.retrieved_context_path.exists() else None
+        ),
+        planner_memory_path=(
+            storage.as_relative(context.paths.planner_memory_path) if context.paths.planner_memory_path.exists() else None
         ),
         execution_report_path=storage.as_relative(context.paths.execution_report_path),
         final_video_path=_as_relative_output_path(storage, execution_report.final_video_path),

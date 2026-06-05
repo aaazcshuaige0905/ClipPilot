@@ -1,18 +1,24 @@
 from pathlib import Path
 
 from clippilot.core.exceptions import ClipPilotProcessingError
-from clippilot.schemas.editing_plan import EditingPlan
-from clippilot.schemas.execution_report import ExecutionClipResult, ExecutionReport
+from clippilot.schemas.editing_plan import EditingPlan, TimelineItem
+from clippilot.schemas.execution_report import ExecutionItemResult, ExecutionReport
 from clippilot.storage.path_manager import TaskPaths
 from clippilot.tools.subtitle import burn_subtitles_to_video, generate_srt_from_editing_plan
 from clippilot.tools.video_cut import cut_video_clip
 from clippilot.tools.video_merge import merge_video_clips
 
 
-def _clip_output_path(task_paths: TaskPaths, clip_id: str) -> Path:
-    """Build the output path for one cut clip inside the task clips directory."""
+def _item_output_path(task_paths: TaskPaths, item_id: str) -> Path:
+    """Build the output path for one rendered timeline item inside the task clips directory."""
 
-    return task_paths.clips_dir / f"{clip_id}.mp4"
+    return task_paths.clips_dir / f"{item_id}.mp4"
+
+
+def _item_part_output_path(task_paths: TaskPaths, item_id: str, part_index: int) -> Path:
+    """Build the output path for one source-ref part within a montage timeline item."""
+
+    return task_paths.clips_dir / f"{item_id}_part_{part_index:02d}.mp4"
 
 
 def _normalize_editing_plan(editing_plan: EditingPlan | dict) -> EditingPlan:
@@ -23,6 +29,96 @@ def _normalize_editing_plan(editing_plan: EditingPlan | dict) -> EditingPlan:
     return EditingPlan.model_validate(editing_plan)
 
 
+def _render_single_range_item(
+    item: TimelineItem,
+    source_video_path: str,
+    output_item_path: Path,
+) -> ExecutionItemResult:
+    """Render one continuous-range timeline item into a standalone media file."""
+
+    cut_result = cut_video_clip(
+        input_video_path=source_video_path,
+        output_clip_path=str(output_item_path),
+        start_time=item.source_start,
+        end_time=item.source_end,
+    )
+    return ExecutionItemResult(
+        item_id=item.item_id,
+        source_start=item.source_start,
+        source_end=item.source_end,
+        item_path=cut_result.clip_path,
+        duration=cut_result.duration,
+        success=cut_result.success,
+        error=cut_result.error,
+    )
+
+
+def _render_montage_item(
+    item: TimelineItem,
+    source_video_path: str,
+    task_paths: TaskPaths,
+    output_item_path: Path,
+) -> ExecutionItemResult:
+    """Render one montage timeline item by cutting each source ref and concatenating them."""
+
+    part_paths: list[str] = []
+    for part_index, reference in enumerate(item.source_refs, start=1):
+        part_output_path = _item_part_output_path(task_paths, item.item_id, part_index)
+        part_result = cut_video_clip(
+            input_video_path=source_video_path,
+            output_clip_path=str(part_output_path),
+            start_time=reference.start,
+            end_time=reference.end,
+        )
+        if not part_result.success:
+            return ExecutionItemResult(
+                item_id=item.item_id,
+                source_start=item.source_start,
+                source_end=item.source_end,
+                item_path=str(output_item_path),
+                duration=0.0,
+                success=False,
+                error=part_result.error or f"Failed to cut montage part {part_index}.",
+            )
+        part_paths.append(part_result.clip_path)
+
+    merge_result = merge_video_clips(
+        clip_paths=part_paths,
+        output_video_path=str(output_item_path),
+    )
+    return ExecutionItemResult(
+        item_id=item.item_id,
+        source_start=item.source_start,
+        source_end=item.source_end,
+        item_path=merge_result.final_video_path,
+        duration=item.duration,
+        success=merge_result.success,
+        error=merge_result.error,
+    )
+
+
+def _render_timeline_item(
+    item: TimelineItem,
+    source_video_path: str,
+    task_paths: TaskPaths,
+) -> ExecutionItemResult:
+    """Render one timeline item using the single planner-defined execution logic."""
+
+    output_item_path = _item_output_path(task_paths, item.item_id)
+    if item.assembly_mode == "montage" and len(item.source_refs) > 1:
+        return _render_montage_item(
+            item=item,
+            source_video_path=source_video_path,
+            task_paths=task_paths,
+            output_item_path=output_item_path,
+        )
+    return _render_single_range_item(
+        item=item,
+        source_video_path=source_video_path,
+        output_item_path=output_item_path,
+    )
+
+
 def execute_editing_plan(
     task_id: str,
     source_video_path: str,
@@ -30,64 +126,52 @@ def execute_editing_plan(
     task_paths: TaskPaths,
     need_burn_subtitle: bool,
 ) -> ExecutionReport:
-    """Execute the editing plan by cutting clips, merging them, and generating subtitles."""
+    """Execute the editing plan by rendering timeline items, merging them, and generating subtitles."""
 
     plan = _normalize_editing_plan(editing_plan)
-    clip_results: list[ExecutionClipResult] = []
+    item_results: list[ExecutionItemResult] = []
     warnings: list[str] = []
     errors: list[str] = []
-    successful_clip_paths: list[str] = []
+    successful_item_paths: list[str] = []
     final_video_path = str(task_paths.final_video_path)
     subtitle_path = str(task_paths.subtitle_path)
     burned_video_path = str(task_paths.burned_video_path) if need_burn_subtitle else None
 
-    for clip in plan.clips:
-        output_clip_path = _clip_output_path(task_paths, clip.clip_id)
+    for item in plan.timeline_items:
         try:
-            cut_result = cut_video_clip(
-                input_video_path=source_video_path,
-                output_clip_path=str(output_clip_path),
-                start_time=clip.source_start,
-                end_time=clip.source_end,
+            item_result = _render_timeline_item(
+                item=item,
+                source_video_path=source_video_path,
+                task_paths=task_paths,
             )
         except Exception as exc:
-            errors.append(f"{clip.clip_id}: unexpected cut failure: {exc}")
-            clip_results.append(
-                ExecutionClipResult(
-                    clip_id=clip.clip_id,
-                    source_start=clip.source_start,
-                    source_end=clip.source_end,
-                    clip_path=str(output_clip_path),
+            errors.append(f"{item.item_id}: unexpected render failure: {exc}")
+            item_results.append(
+                ExecutionItemResult(
+                    item_id=item.item_id,
+                    source_start=item.source_start,
+                    source_end=item.source_end,
+                    item_path=str(_item_output_path(task_paths, item.item_id)),
                     duration=0.0,
                     success=False,
-                    error=f"Unexpected cut failure: {exc}",
+                    error=f"Unexpected render failure: {exc}",
                 )
             )
             continue
 
-        clip_results.append(
-            ExecutionClipResult(
-                clip_id=clip.clip_id,
-                source_start=clip.source_start,
-                source_end=clip.source_end,
-                clip_path=cut_result.clip_path,
-                duration=cut_result.duration,
-                success=cut_result.success,
-                error=cut_result.error,
-            )
-        )
-        if cut_result.success:
-            successful_clip_paths.append(cut_result.clip_path)
-        elif cut_result.error:
-            errors.append(f"{clip.clip_id}: {cut_result.error}")
+        item_results.append(item_result)
+        if item_result.success:
+            successful_item_paths.append(item_result.item_path)
+        elif item_result.error:
+            errors.append(f"{item.item_id}: {item_result.error}")
 
-    if len(successful_clip_paths) < len(plan.clips):
-        warnings.append("Some clips failed to cut and were excluded from the final merge.")
+    if len(successful_item_paths) < len(plan.timeline_items):
+        warnings.append("Some timeline items failed to render and were excluded from the final merge.")
 
-    if successful_clip_paths:
+    if successful_item_paths:
         try:
             merge_result = merge_video_clips(
-                clip_paths=successful_clip_paths,
+                clip_paths=successful_item_paths,
                 output_video_path=str(task_paths.final_video_path),
             )
             final_video_path = merge_result.final_video_path
@@ -98,7 +182,7 @@ def execute_editing_plan(
         except Exception as exc:
             errors.append(f"Unexpected merge failure: {exc}")
     else:
-        errors.append("No clip was successfully cut, so final video merge could not run.")
+        errors.append("No timeline item was successfully rendered, so final video merge could not run.")
 
     try:
         subtitle_result = generate_srt_from_editing_plan(
@@ -132,7 +216,7 @@ def execute_editing_plan(
     return ExecutionReport(
         task_id=task_id,
         status=status,
-        clip_results=clip_results,
+        item_results=item_results,
         final_video_path=final_video_path,
         subtitle_path=subtitle_path,
         burned_video_path=burned_video_path,

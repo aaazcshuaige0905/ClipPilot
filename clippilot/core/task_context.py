@@ -2,6 +2,7 @@ from dataclasses import dataclass, field
 
 from clippilot.core.states import TaskStatus, WorkflowStage
 from clippilot.schemas.agent_trace import AgentTrace
+from clippilot.schemas.planner_memory import PlannerMemory
 from clippilot.schemas.project_state import ProjectState
 from clippilot.schemas.task_result import TaskArtifact, TaskArtifactManifest
 from clippilot.schemas.user_request import UserRequest
@@ -18,6 +19,7 @@ class TaskContext:
     stage: str = WorkflowStage.CREATED.value
     status: str = TaskStatus.PENDING.value
     project_state: ProjectState | None = None
+    planner_memory: PlannerMemory | None = None
     artifacts: list[TaskArtifact] = field(default_factory=list)
     traces: list[AgentTrace] = field(default_factory=list)
 

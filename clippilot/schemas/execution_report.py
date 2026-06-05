@@ -1,13 +1,13 @@
 from pydantic import BaseModel, Field
 
 
-class ExecutionClipResult(BaseModel):
-    """Represent the execution result of one planned clip cut step."""
+class ExecutionItemResult(BaseModel):
+    """Represent the execution result of one planned timeline-item render step."""
 
-    clip_id: str
+    item_id: str
     source_start: float = Field(default=0.0, ge=0.0)
     source_end: float = Field(default=0.0, ge=0.0)
-    clip_path: str
+    item_path: str
     duration: float = Field(default=0.0, ge=0.0)
     success: bool
     error: str | None = None
@@ -18,7 +18,7 @@ class ExecutionReport(BaseModel):
 
     task_id: str
     status: str
-    clip_results: list[ExecutionClipResult] = Field(default_factory=list)
+    item_results: list[ExecutionItemResult] = Field(default_factory=list)
     final_video_path: str | None = None
     subtitle_path: str | None = None
     burned_video_path: str | None = None

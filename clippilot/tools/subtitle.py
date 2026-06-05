@@ -55,7 +55,7 @@ def generate_srt_from_editing_plan(
     editing_plan: EditingPlan | dict,
     output_srt_path: str,
 ) -> SubtitleGenerationResult:
-    """Generate an SRT file based on the new video timeline defined by the editing plan."""
+    """Generate an SRT file based on the rendered timeline items defined by the editing plan."""
 
     plan = _normalize_editing_plan(editing_plan)
     output_path = Path(output_srt_path)
@@ -64,10 +64,10 @@ def generate_srt_from_editing_plan(
     lines: list[str] = []
     timeline_cursor = 0.0
 
-    for index, clip in enumerate(plan.clips, start=1):
+    for index, item in enumerate(plan.timeline_items, start=1):
         start_time = timeline_cursor
-        end_time = round(start_time + clip.duration, 3)
-        subtitle_text = clip.subtitle.strip() or clip.text.strip()
+        end_time = round(start_time + item.duration, 3)
+        subtitle_text = item.subtitle.strip() or item.text.strip()
 
         lines.extend(
             [
@@ -82,7 +82,7 @@ def generate_srt_from_editing_plan(
     output_path.write_text("\n".join(lines), encoding="utf-8")
     return SubtitleGenerationResult(
         subtitle_path=str(output_path),
-        subtitle_count=len(plan.clips),
+        subtitle_count=len(plan.timeline_items),
         success=True,
     )
 

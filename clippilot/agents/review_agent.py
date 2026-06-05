@@ -53,23 +53,23 @@ def _resolve_task_id(editing_plan: EditingPlan | dict, execution_report: Executi
     return execution_report.task_id
 
 
-def _extract_clips(editing_plan: EditingPlan | dict) -> list:
-    """Return raw clips from either a validated editing plan or a raw dictionary payload."""
+def _extract_timeline_items(editing_plan: EditingPlan | dict) -> list:
+    """Return raw timeline items from either a validated editing plan or a raw dictionary payload."""
 
     if isinstance(editing_plan, EditingPlan):
-        return list(editing_plan.clips)
+        return list(editing_plan.timeline_items)
     if isinstance(editing_plan, dict):
-        raw_clips = editing_plan.get("clips") or []
-        return list(raw_clips) if isinstance(raw_clips, list) else []
+        raw_items = editing_plan.get("timeline_items") or []
+        return list(raw_items) if isinstance(raw_items, list) else []
     return []
 
 
-def _clip_field(clip: object, field_name: str, default: object = None) -> object:
-    """Read a field from either a clip model or a raw clip dictionary."""
+def _plan_item_field(item: object, field_name: str, default: object = None) -> object:
+    """Read a field from either a timeline-item model or a raw dictionary."""
 
-    if isinstance(clip, dict):
-        return clip.get(field_name, default)
-    return getattr(clip, field_name, default)
+    if isinstance(item, dict):
+        return item.get(field_name, default)
+    return getattr(item, field_name, default)
 
 
 def _contains_cjk(text: str) -> bool:
@@ -122,7 +122,7 @@ def review_task_output(
 
     checks: list[ReviewCheck] = []
     suggestions: list[str] = []
-    raw_clips = _extract_clips(editing_plan)
+    raw_items = _extract_timeline_items(editing_plan)
 
     final_video_path = Path(execution.final_video_path) if execution.final_video_path else None
     subtitle_path = Path(execution.subtitle_path) if execution.subtitle_path else None
@@ -171,9 +171,15 @@ def review_task_output(
             )
             if not final_video_duration_passed:
                 if delta > 5:
-                    _append_suggestion(suggestions, "Final video is too long. Remove lower-scoring clips from the editing plan.")
+                    _append_suggestion(
+                        suggestions,
+                        "Final video is too long. Remove lower-scoring timeline items from the editing plan.",
+                    )
                 elif delta < -5:
-                    _append_suggestion(suggestions, "Final video is too short. Add more relevant clips to the editing plan.")
+                    _append_suggestion(
+                        suggestions,
+                        "Final video is too short. Add more relevant timeline items to the editing plan.",
+                    )
         except (ClipPilotProcessingError, OSError) as exc:
             final_video_duration_message = f"Failed to read final video duration: {exc}"
             _append_suggestion(suggestions, "Final video metadata could not be read. Check the merged video integrity.")
@@ -202,26 +208,29 @@ def review_task_output(
     if not subtitle_exists:
         _append_suggestion(suggestions, "Subtitle file is missing. Check subtitle generation in the executor stage.")
 
-    editing_plan_has_clips = bool(raw_clips)
+    editing_plan_has_items = bool(raw_items)
     checks.append(
         _check(
-            name="editing_plan_has_clips",
-            passed=editing_plan_has_clips,
+            name="editing_plan_has_timeline_items",
+            passed=editing_plan_has_items,
             severity=CRITICAL,
             message=(
-                f"Editing plan contains {len(raw_clips)} clip(s)."
-                if editing_plan_has_clips
-                else "Editing plan does not contain any clips."
+                f"Editing plan contains {len(raw_items)} timeline item(s)."
+                if editing_plan_has_items
+                else "Editing plan does not contain any timeline items."
             ),
         )
     )
-    if not editing_plan_has_clips:
-        _append_suggestion(suggestions, "Editing plan is empty. Re-run the planner and ensure highlight candidates are available.")
+    if not editing_plan_has_items:
+        _append_suggestion(
+            suggestions,
+            "Editing plan is empty. Re-run the planner and ensure timeline items are generated.",
+        )
 
-    for index, clip in enumerate(raw_clips, start=1):
-        clip_id = str(_clip_field(clip, "clip_id", f"clip_{index:02d}"))
-        start_time = _clip_field(clip, "source_start")
-        end_time = _clip_field(clip, "source_end")
+    for index, item in enumerate(raw_items, start=1):
+        item_id = str(_plan_item_field(item, "item_id", f"item_{index:02d}"))
+        start_time = _plan_item_field(item, "source_start")
+        end_time = _plan_item_field(item, "source_end")
 
         try:
             start_value = float(start_time)
@@ -236,46 +245,52 @@ def review_task_output(
 
         checks.append(
             _check(
-                name=f"{clip_id}_source_timing",
+                name=f"{item_id}_source_timing",
                 passed=timing_passed,
                 severity=CRITICAL,
                 message=(
-                    f"{clip_id} uses source_start={start_value} and source_end={end_value}."
+                    f"{item_id} uses source_start={start_value} and source_end={end_value}."
                     if timing_passed
-                    else f"{clip_id} has invalid timing values: source_start={start_time}, source_end={end_time}."
+                    else f"{item_id} has invalid timing values: source_start={start_time}, source_end={end_time}."
                 ),
             )
         )
         if not timing_passed:
-            _append_suggestion(suggestions, "Some clip timing ranges are invalid. Rebuild the editing plan before execution.")
+            _append_suggestion(
+                suggestions,
+                "Some timeline item timing ranges are invalid. Rebuild the editing plan before execution.",
+            )
 
         checks.append(
             _check(
-                name=f"{clip_id}_within_source_bounds",
+                name=f"{item_id}_within_source_bounds",
                 passed=bounds_passed,
                 severity=CRITICAL,
                 message=(
-                    f"{clip_id} stays within original duration {original_video.duration_seconds:.2f}s."
+                    f"{item_id} stays within original duration {original_video.duration_seconds:.2f}s."
                     if bounds_passed
-                    else f"{clip_id} exceeds the original video duration of {original_video.duration_seconds:.2f}s."
+                    else f"{item_id} exceeds the original video duration of {original_video.duration_seconds:.2f}s."
                 ),
             )
         )
         if not bounds_passed:
-            _append_suggestion(suggestions, "Some clips exceed the original video duration. Regenerate the editing plan with valid bounds.")
+            _append_suggestion(
+                suggestions,
+                "Some timeline items exceed the original video duration. Regenerate the editing plan with valid bounds.",
+            )
 
-        subtitle_text = str(_clip_field(clip, "subtitle", "") or _clip_field(clip, "text", "") or "").strip()
+        subtitle_text = str(_plan_item_field(item, "subtitle", "") or _plan_item_field(item, "text", "") or "").strip()
         character_limit = _subtitle_limit(user.language, subtitle_text)
         subtitle_length_passed = len(subtitle_text) <= character_limit
         checks.append(
             _check(
-                name=f"{clip_id}_subtitle_length",
+                name=f"{item_id}_subtitle_length",
                 passed=subtitle_length_passed,
                 severity=WARNING,
                 message=(
-                    f"{clip_id} subtitle length is {len(subtitle_text)} characters within the {character_limit}-character limit."
+                    f"{item_id} subtitle length is {len(subtitle_text)} characters within the {character_limit}-character limit."
                     if subtitle_length_passed
-                    else f"{clip_id} subtitle length is {len(subtitle_text)} characters and exceeds the {character_limit}-character limit."
+                    else f"{item_id} subtitle length is {len(subtitle_text)} characters and exceeds the {character_limit}-character limit."
                 ),
             )
         )

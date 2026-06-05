@@ -7,7 +7,9 @@ from clippilot.core.exceptions import (
     ClipPilotStorageError,
     ClipPilotValidationError,
 )
+from clippilot.agents.revision_agent import revise_editing_plan
 from clippilot.core.workflow import run_stage1_workflow
+from clippilot.schemas.revision_request import RevisionRequest
 from clippilot.schemas.task_result import TaskListResponse, TaskResult, TaskStatusResponse
 from clippilot.schemas.user_request import UserRequest
 from clippilot.storage.path_manager import ensure_base_directories, load_settings
@@ -86,4 +88,20 @@ async def upload_video(
     except ClipPilotProcessingError as exc:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc
     except ClipPilotStorageError as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc
+
+
+@app.post("/api/v1/tasks/{task_id}/revise", response_model=TaskStatusResponse)
+async def revise_task(task_id: str, payload: RevisionRequest) -> TaskStatusResponse:
+    """Apply revision feedback to an existing task and return its refreshed status snapshot."""
+
+    try:
+        revise_editing_plan(task_id=task_id, feedback_text=payload.feedback_text, settings=settings)
+        storage = TaskStorage(settings)
+        return storage.load_task_status(task_id)
+    except ClipPilotValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except ClipPilotStorageError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ClipPilotProcessingError as exc:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc

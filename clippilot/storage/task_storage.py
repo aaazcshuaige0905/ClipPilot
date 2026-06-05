@@ -13,6 +13,8 @@ else:
 
 from clippilot.core.exceptions import ClipPilotStorageError
 from clippilot.core.task_context import TaskContext
+from clippilot.schemas.editing_plan import EditingPlan, HighlightCandidatesResult
+from clippilot.schemas.planner_memory import PlannerMemory
 from clippilot.schemas.task_result import (
     TaskArtifactManifest,
     TaskListResponse,
@@ -21,6 +23,9 @@ from clippilot.schemas.task_result import (
     TaskSummary,
 )
 from clippilot.schemas.project_state import ProjectState
+from clippilot.schemas.review_report import ReviewReport
+from clippilot.schemas.transcript import TranscriptResult
+from clippilot.schemas.video_info import VideoInfo
 from clippilot.storage.json_io import read_json_file, write_json_file
 from clippilot.storage.path_manager import AppSettings, TaskPaths, build_task_paths, ensure_base_directories, load_settings
 
@@ -52,6 +57,7 @@ class TaskStorage:
             task_paths.clips_dir,
             task_paths.final_dir,
             task_paths.plan_dir,
+            task_paths.plan_versions_dir,
             task_paths.review_dir,
             task_paths.trace_dir,
         ):
@@ -121,6 +127,17 @@ class TaskStorage:
 
         return self.save_model(editing_plan, task_paths.editing_plan_path)
 
+    def save_plan_version(self, editing_plan: BaseModel | dict, task_paths: TaskPaths, version: int) -> Path:
+        """Persist one versioned editing plan snapshot for planner iteration and debugging."""
+
+        version_path = task_paths.plan_versions_dir / f"editing_plan_v{version:02d}.json"
+        return self.save_model(editing_plan, version_path)
+
+    def save_planner_memory(self, planner_memory: BaseModel | dict, task_paths: TaskPaths) -> Path:
+        """Persist planner-owned short-term memory as a standalone task artifact."""
+
+        return self.save_model(planner_memory, task_paths.planner_memory_path)
+
     def save_execution_report(self, execution_report: BaseModel | dict, task_paths: TaskPaths) -> Path:
         """Persist an execution report artifact inside the structured task directory."""
 
@@ -179,6 +196,54 @@ class TaskStorage:
         if not task_paths.project_state_path.exists():
             raise ClipPilotStorageError(f"Project state was not found for task_id={task_id}.")
         return ProjectState.model_validate(read_json_file(task_paths.project_state_path))
+
+    def load_video_info(self, task_id: str) -> VideoInfo:
+        """Load persisted source-video metadata for a task."""
+
+        task_paths = self.task_paths_for(task_id)
+        if not task_paths.video_info_path.exists():
+            raise ClipPilotStorageError(f"Video info was not found for task_id={task_id}.")
+        return VideoInfo.model_validate(read_json_file(task_paths.video_info_path))
+
+    def load_transcript(self, task_id: str) -> TranscriptResult:
+        """Load the persisted transcript artifact for a task."""
+
+        task_paths = self.task_paths_for(task_id)
+        if not task_paths.transcript_json_path.exists():
+            raise ClipPilotStorageError(f"Transcript was not found for task_id={task_id}.")
+        return TranscriptResult.model_validate(read_json_file(task_paths.transcript_json_path))
+
+    def load_candidates(self, task_id: str) -> HighlightCandidatesResult:
+        """Load the persisted highlight-candidate artifact for a task."""
+
+        task_paths = self.task_paths_for(task_id)
+        if not task_paths.highlight_candidates_path.exists():
+            raise ClipPilotStorageError(f"Highlight candidates were not found for task_id={task_id}.")
+        return HighlightCandidatesResult.model_validate(read_json_file(task_paths.highlight_candidates_path))
+
+    def load_editing_plan(self, task_id: str) -> EditingPlan:
+        """Load the latest persisted editing plan for a task."""
+
+        task_paths = self.task_paths_for(task_id)
+        if not task_paths.editing_plan_path.exists():
+            raise ClipPilotStorageError(f"Editing plan was not found for task_id={task_id}.")
+        return EditingPlan.model_validate(read_json_file(task_paths.editing_plan_path))
+
+    def load_planner_memory(self, task_id: str) -> PlannerMemory:
+        """Load the standalone planner short-term memory artifact for a task."""
+
+        task_paths = self.task_paths_for(task_id)
+        if not task_paths.planner_memory_path.exists():
+            raise ClipPilotStorageError(f"Planner memory was not found for task_id={task_id}.")
+        return PlannerMemory.model_validate(read_json_file(task_paths.planner_memory_path))
+
+    def load_review_report(self, task_id: str) -> ReviewReport:
+        """Load the persisted review report for a task if present."""
+
+        task_paths = self.task_paths_for(task_id)
+        if not task_paths.review_report_path.exists():
+            raise ClipPilotStorageError(f"Review report was not found for task_id={task_id}.")
+        return ReviewReport.model_validate(read_json_file(task_paths.review_report_path))
 
     def load_task_status(self, task_id: str) -> TaskStatusResponse:
         """Load a full task status snapshot including task result and artifact manifest."""

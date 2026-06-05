@@ -57,6 +57,7 @@ class TaskPaths:
     clips_dir: Path
     final_dir: Path
     plan_dir: Path
+    plan_versions_dir: Path
     review_dir: Path
     trace_dir: Path
     source_video_path: Path
@@ -68,6 +69,7 @@ class TaskPaths:
     retrieval_trace_path: Path
     highlight_candidates_path: Path
     editing_plan_path: Path
+    planner_memory_path: Path
     execution_report_path: Path
     review_report_path: Path
     final_video_path: Path
@@ -219,6 +221,7 @@ def build_task_paths(settings: AppSettings, task_id: str, original_file_name: st
     clips_dir = task_root / "clips"
     final_dir = task_root / "final"
     plan_dir = task_root / "plan"
+    plan_versions_dir = plan_dir / "versions"
     review_dir = task_root / "review"
     trace_dir = task_root / "trace"
 
@@ -233,6 +236,7 @@ def build_task_paths(settings: AppSettings, task_id: str, original_file_name: st
         clips_dir=clips_dir,
         final_dir=final_dir,
         plan_dir=plan_dir,
+        plan_versions_dir=plan_versions_dir,
         review_dir=review_dir,
         trace_dir=trace_dir,
         source_video_path=input_dir / f"source{suffix}",
@@ -244,6 +248,7 @@ def build_task_paths(settings: AppSettings, task_id: str, original_file_name: st
         retrieval_trace_path=understanding_dir / "retrieval_trace.json",
         highlight_candidates_path=highlights_dir / "candidates.json",
         editing_plan_path=plan_dir / "editing_plan.json",
+        planner_memory_path=plan_dir / "planner_memory.json",
         execution_report_path=plan_dir / "execution_report.json",
         review_report_path=review_dir / "review_report.json",
         final_video_path=final_dir / "final_video.mp4",
