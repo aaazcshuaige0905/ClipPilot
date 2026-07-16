@@ -16,6 +16,7 @@ pytest-cache-files-*/
 .coverage.*
 htmlcov/
 tests_runtime/
+tests/
 .hypothesis/
 
 # Lint / type-check caches
@@ -34,6 +35,7 @@ pip-wheel-metadata/
 .env
 .env.*
 .python-version
+start-dev.local.ps1
 
 # OS / editor noise
 Thumbs.db
