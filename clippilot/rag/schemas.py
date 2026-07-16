@@ -68,7 +68,7 @@ class RetrievalQuery(BaseModel):
     tags: list[str] = Field(default_factory=list)
 
     def metadata_filters(self) -> dict[str, str]:
-        """Return compact equality filters for stores that support metadata filtering."""
+        """Return strict metadata filters that are reliably populated in the dense index."""
 
         filters: dict[str, str] = {"stage": self.stage}
         if self.platform:
@@ -77,8 +77,6 @@ class RetrievalQuery(BaseModel):
             filters["language"] = self.language
         if self.style:
             filters["style"] = self.style
-        if self.duration_band:
-            filters["duration_band"] = self.duration_band
         return filters
 
 

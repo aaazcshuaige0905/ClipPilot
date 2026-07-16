@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from clippilot.rag.metadata_normalization import normalize_language, normalize_platform, normalize_style
 from clippilot.rag.schemas import RetrievalQuery
 from clippilot.schemas.project_state import FineGrainedUnit
 from clippilot.schemas.user_request import UserRequest
@@ -25,6 +26,9 @@ def build_retrieval_query(
 ) -> RetrievalQuery:
     """Build a planner-oriented retrieval query from the current task context."""
 
+    normalized_platform = normalize_platform(user_request.target_platform)
+    normalized_language = normalize_language(user_request.language)
+    normalized_style = normalize_style(user_request.edit_style)
     keywords: list[str] = []
     for unit in fine_grained_units or []:
         for keyword in unit.keywords:
@@ -38,10 +42,10 @@ def build_retrieval_query(
     query_text = " | ".join(
         part
         for part in [
-            f"platform {user_request.target_platform}",
+            _metadata_query_phrase("platform", user_request.target_platform, normalized_platform),
             f"duration {user_request.target_duration} seconds",
-            f"style {user_request.edit_style}",
-            f"language {user_request.language}",
+            _metadata_query_phrase("style", user_request.edit_style, normalized_style),
+            _metadata_query_phrase("language", user_request.language, normalized_language),
             f"keywords {' '.join(keywords)}" if keywords else "",
             "need strategy for short-video editing planner",
         ]
@@ -49,9 +53,9 @@ def build_retrieval_query(
     )
     return RetrievalQuery(
         text=query_text,
-        platform=user_request.target_platform.strip().lower(),
-        language=user_request.language.strip().lower(),
-        style=user_request.edit_style.strip().lower(),
+        platform=normalized_platform,
+        language=normalized_language,
+        style=normalized_style,
         duration_band=duration_band_for(user_request.target_duration),
         stage="planning",
         top_k_dense=settings.rag_top_k_dense,
@@ -59,3 +63,16 @@ def build_retrieval_query(
         top_k_final=settings.rag_top_k_final,
         tags=keywords,
     )
+
+
+def _metadata_query_phrase(label: str, raw_value: str, normalized_value: str | None) -> str:
+    """Build one retrieval phrase that keeps user wording while appending the canonical value."""
+
+    raw = raw_value.strip()
+    if not raw:
+        return ""
+
+    raw_lower = raw.lower()
+    if normalized_value and normalized_value != raw_lower:
+        return f"{label} {raw} {normalized_value}"
+    return f"{label} {raw}"

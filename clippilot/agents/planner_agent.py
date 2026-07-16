@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import os
 from itertools import combinations
 
@@ -22,6 +23,7 @@ from clippilot.schemas.video_info import VideoInfo
 
 DEFAULT_QWEN_PLANNER_MODEL = "qwen-plus-latest"
 DEFAULT_QWEN_PLANNER_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+PREFERRED_DURATION_TOLERANCE_SECONDS = 2.0
 HOOK_MARKERS = (
     "为什么",
     "先说结论",
@@ -33,6 +35,28 @@ HOOK_MARKERS = (
     "核心",
     "关键",
 )
+
+
+@dataclass(frozen=True)
+class _TrimOption:
+    """Represent one candidate-specific trim option that the planner can choose."""
+
+    start: float
+    end: float
+    duration: float
+    assembly_mode: str
+    source_refs: tuple[TimelineSourceRef, ...]
+    source_unit_ids: tuple[str, ...]
+    text: str
+
+
+@dataclass(frozen=True)
+class _ResolvedTimelineCandidate:
+    """Represent one selected candidate after duration closure resolved its exact trim window."""
+
+    candidate: LLMHighlightCandidate
+    role: str
+    option: _TrimOption
 
 
 def _is_cjk_character(character: str) -> bool:
@@ -64,6 +88,378 @@ def _candidate_target_duration(candidate: LLMHighlightCandidate) -> float:
     """Return the preferred planning duration for one LLM candidate."""
 
     return round(min(candidate.duration, candidate.trim_policy.ideal_duration), 2)
+
+
+def _preferred_duration_window(target_duration: int) -> tuple[float, float]:
+    """Return the preferred total-duration window for one generated short-video plan."""
+
+    lower_bound = max(5.0, round(target_duration - PREFERRED_DURATION_TOLERANCE_SECONDS, 2))
+    upper_bound = round(target_duration + PREFERRED_DURATION_TOLERANCE_SECONDS, 2)
+    return lower_bound, upper_bound
+
+
+def _duration_extension_priority(role: str) -> int:
+    """Return the planner priority rank used when the plan needs more duration."""
+
+    priorities = {
+        "core_point": 0,
+        "supporting_point": 1,
+        "ending": 2,
+        "context": 3,
+        "hook": 4,
+    }
+    return priorities.get(role, 5)
+
+
+def _duration_reduction_priority(role: str) -> int:
+    """Return the planner priority rank used when the plan needs to shrink."""
+
+    priorities = {
+        "context": 0,
+        "supporting_point": 1,
+        "core_point": 2,
+        "ending": 3,
+        "hook": 4,
+    }
+    return priorities.get(role, 5)
+
+
+def _collect_candidate_units(
+    candidate: LLMHighlightCandidate,
+    fine_grained_units: list[FineGrainedUnit] | None,
+) -> list[FineGrainedUnit]:
+    """Collect ordered fine-grained units that belong to one candidate."""
+
+    units_by_id = {unit.unit_id: unit for unit in (fine_grained_units or [])}
+    return [units_by_id[unit_id] for unit_id in candidate.transcript_unit_ids if unit_id in units_by_id]
+
+
+def _overlapping_unit_ids(units: list[FineGrainedUnit], start: float, end: float) -> list[str]:
+    """Collect fine-grained unit IDs that overlap one trimmed continuous range."""
+
+    return [
+        unit.unit_id
+        for unit in units
+        if unit.end > start + 0.01 and unit.start < end - 0.01
+    ]
+
+
+def _text_for_trimmed_range(
+    candidate: LLMHighlightCandidate,
+    units: list[FineGrainedUnit],
+    start: float,
+    end: float,
+) -> str:
+    """Build readable transcript text for one trimmed range."""
+
+    overlapping_units = [
+        unit.text.strip()
+        for unit in units
+        if unit.end > start + 0.01 and unit.start < end - 0.01 and unit.text.strip()
+    ]
+    return " ".join(overlapping_units) or candidate.transcript_excerpt.strip() or candidate.summary.strip()
+
+
+def _build_montage_trim_option(
+    candidate: LLMHighlightCandidate,
+    ordered_units: list[FineGrainedUnit],
+) -> _TrimOption | None:
+    """Return a montage trim option for one opening hook when the first/last unit pairing is compact."""
+
+    if not (
+        candidate.semantic_role == "opening_hook"
+        and len(ordered_units) >= 3
+        and round(ordered_units[-1].start - ordered_units[0].end, 2) >= 0.5
+        and round(ordered_units[-1].end - ordered_units[0].start, 2) <= 6.0
+    ):
+        return None
+
+    source_refs = (
+        TimelineSourceRef(
+            ref_id=ordered_units[0].unit_id,
+            ref_type="unit",
+            start=ordered_units[0].start,
+            end=ordered_units[0].end,
+            text=ordered_units[0].text,
+        ),
+        TimelineSourceRef(
+            ref_id=ordered_units[-1].unit_id,
+            ref_type="unit",
+            start=ordered_units[-1].start,
+            end=ordered_units[-1].end,
+            text=ordered_units[-1].text,
+        ),
+    )
+    text = " ".join(reference.text.strip() for reference in source_refs if reference.text.strip()) or candidate.transcript_excerpt
+    duration = round(sum(reference.end - reference.start for reference in source_refs), 2)
+    return _TrimOption(
+        start=round(min(reference.start for reference in source_refs), 2),
+        end=round(max(reference.end for reference in source_refs), 2),
+        duration=duration,
+        assembly_mode="montage",
+        source_refs=source_refs,
+        source_unit_ids=tuple(reference.ref_id for reference in source_refs),
+        text=text.strip(),
+    )
+
+
+def _candidate_trim_points(candidate: LLMHighlightCandidate) -> list[float]:
+    """Build a stable set of candidate cut points used during duration closure."""
+
+    points = {
+        round(candidate.source_start, 2),
+        round(candidate.source_end, 2),
+        round(candidate.trim_policy.preferred_start, 2),
+        round(candidate.trim_policy.preferred_end, 2),
+    }
+    for point in candidate.trim_policy.safe_cut_points:
+        bounded_point = round(min(max(point, candidate.source_start), candidate.source_end), 2)
+        points.add(bounded_point)
+    return sorted(points)
+
+
+def _build_continuous_trim_options(
+    candidate: LLMHighlightCandidate,
+    ordered_units: list[FineGrainedUnit],
+) -> list[_TrimOption]:
+    """Enumerate continuous trim options for one candidate using available cut points."""
+
+    min_duration = round(candidate.trim_policy.min_duration, 2)
+    max_duration = round(min(candidate.duration, candidate.trim_policy.max_duration), 2)
+    trim_options: dict[tuple[float, float, str], _TrimOption] = {}
+    trim_points = _candidate_trim_points(candidate)
+
+    for start in trim_points:
+        for end in trim_points:
+            if end <= start:
+                continue
+            duration = round(end - start, 2)
+            if duration < min_duration - 0.01 or duration > max_duration + 0.01:
+                continue
+            text = _text_for_trimmed_range(candidate, ordered_units, start, end)
+            source_ref = TimelineSourceRef(
+                ref_id=f"{candidate.candidate_id}_trim_{start:.2f}_{end:.2f}",
+                ref_type="trim_window",
+                start=round(start, 2),
+                end=round(end, 2),
+                text=text,
+            )
+            option = _TrimOption(
+                start=round(start, 2),
+                end=round(end, 2),
+                duration=duration,
+                assembly_mode="continuous_trim",
+                source_refs=(source_ref,),
+                source_unit_ids=tuple(_overlapping_unit_ids(ordered_units, start, end)),
+                text=text.strip(),
+            )
+            trim_options[(option.start, option.end, option.assembly_mode)] = option
+
+    if not trim_options:
+        fallback_start = round(candidate.trim_policy.preferred_start, 2)
+        fallback_end = round(candidate.trim_policy.preferred_end, 2)
+        text = _text_for_trimmed_range(candidate, ordered_units, fallback_start, fallback_end)
+        source_ref = TimelineSourceRef(
+            ref_id=f"{candidate.candidate_id}_preferred",
+            ref_type="trim_window",
+            start=fallback_start,
+            end=fallback_end,
+            text=text,
+        )
+        trim_options[(fallback_start, fallback_end, "continuous_trim")] = _TrimOption(
+            start=fallback_start,
+            end=fallback_end,
+            duration=round(fallback_end - fallback_start, 2),
+            assembly_mode="continuous_trim",
+            source_refs=(source_ref,),
+            source_unit_ids=tuple(_overlapping_unit_ids(ordered_units, fallback_start, fallback_end)),
+            text=text.strip(),
+        )
+
+    return sorted(trim_options.values(), key=lambda option: (option.duration, option.start, option.end))
+
+
+def _build_trim_options(
+    candidate: LLMHighlightCandidate,
+    fine_grained_units: list[FineGrainedUnit] | None,
+) -> list[_TrimOption]:
+    """Build every planner-usable trim option for one selected LLM candidate."""
+
+    ordered_units = _collect_candidate_units(candidate, fine_grained_units)
+    options = _build_continuous_trim_options(candidate, ordered_units)
+    montage_option = _build_montage_trim_option(candidate, ordered_units)
+    if montage_option is not None:
+        options.append(montage_option)
+    return options
+
+
+def _trim_option_preference_score(
+    option: _TrimOption,
+    candidate: LLMHighlightCandidate,
+    role: str,
+) -> tuple[float, float, float]:
+    """Build a stable tie-break score for one trim option."""
+
+    preferred_start = candidate.trim_policy.preferred_start
+    preferred_end = candidate.trim_policy.preferred_end
+    if role == "ending":
+        anchor_penalty = abs(option.end - preferred_end)
+    else:
+        anchor_penalty = abs(option.start - preferred_start)
+    preferred_window_penalty = abs(option.start - preferred_start) + abs(option.end - preferred_end)
+    montage_penalty = 0.0 if option.assembly_mode == "continuous_trim" else 0.2
+    return round(anchor_penalty, 4), round(preferred_window_penalty, 4), montage_penalty
+
+
+def _pick_trim_option(
+    candidate: LLMHighlightCandidate,
+    role: str,
+    options: list[_TrimOption],
+    target_duration: float,
+    *,
+    prefer_expansion: bool | None = None,
+    current_duration: float | None = None,
+) -> _TrimOption:
+    """Choose the best trim option for one candidate under one duration target."""
+
+    candidate_options = options
+    if current_duration is not None:
+        if prefer_expansion is True:
+            candidate_options = [option for option in options if option.duration > current_duration + 0.01]
+        elif prefer_expansion is False:
+            candidate_options = [option for option in options if option.duration < current_duration - 0.01]
+    if not candidate_options:
+        candidate_options = options
+
+    def _sort_key(option: _TrimOption) -> tuple[float, int, tuple[float, float, float], float]:
+        direction_penalty = 0
+        if prefer_expansion is True and option.duration < target_duration - 0.01:
+            direction_penalty = 1
+        if prefer_expansion is False and option.duration > target_duration + 0.01:
+            direction_penalty = 1
+        closeness = abs(option.duration - target_duration)
+        duration_tiebreak = -option.duration if prefer_expansion is True else option.duration
+        return (
+            round(closeness, 4),
+            direction_penalty,
+            _trim_option_preference_score(option, candidate, role),
+            round(duration_tiebreak, 4),
+        )
+
+    return min(candidate_options, key=_sort_key)
+
+
+def _resolve_duration_closed_candidates(
+    selected_candidates: list[LLMHighlightCandidate],
+    target_duration: int,
+    fine_grained_units: list[FineGrainedUnit] | None,
+) -> tuple[list[_ResolvedTimelineCandidate], str | None]:
+    """Resolve selected LLM candidates into exact trim windows that close total duration toward target."""
+
+    if not selected_candidates:
+        return [], None
+
+    total_candidates = len(selected_candidates)
+    roles = [
+        _llm_role_for_candidate(candidate, order=index, total=total_candidates)
+        for index, candidate in enumerate(selected_candidates, start=1)
+    ]
+    option_pool: list[list[_TrimOption]] = [
+        _build_trim_options(candidate, fine_grained_units=fine_grained_units)
+        for candidate in selected_candidates
+    ]
+    active_options = [
+        _pick_trim_option(
+            candidate,
+            role,
+            options,
+            _candidate_target_duration(candidate),
+        )
+        for candidate, role, options in zip(selected_candidates, roles, option_pool)
+    ]
+
+    preferred_lower_bound, preferred_upper_bound = _preferred_duration_window(target_duration)
+    total_duration = round(sum(option.duration for option in active_options), 2)
+    original_total = total_duration
+
+    def _apply_adjustments(*, expand: bool, boundary: float, target_total: float) -> None:
+        nonlocal total_duration, active_options
+
+        while (total_duration < boundary - 0.01) if expand else (total_duration > boundary + 0.01):
+            best_choice: tuple[tuple[float, int, float, float], int, _TrimOption] | None = None
+
+            for index, (candidate, role, options, current_option) in enumerate(
+                zip(selected_candidates, roles, option_pool, active_options)
+            ):
+                desired_duration = (
+                    current_option.duration + (boundary - total_duration)
+                    if expand
+                    else current_option.duration - (total_duration - boundary)
+                )
+                next_option = _pick_trim_option(
+                    candidate,
+                    role,
+                    options,
+                    desired_duration,
+                    prefer_expansion=expand,
+                    current_duration=current_option.duration,
+                )
+                if abs(next_option.duration - current_option.duration) <= 0.01:
+                    continue
+
+                new_total = round(total_duration - current_option.duration + next_option.duration, 2)
+                role_priority = _duration_extension_priority(role) if expand else _duration_reduction_priority(role)
+                duration_delta = abs(next_option.duration - current_option.duration)
+                candidate_sort_key = (
+                    abs(new_total - target_total),
+                    role_priority,
+                    0.0 if candidate.must_keep else 1.0,
+                    -duration_delta,
+                )
+                if best_choice is None or candidate_sort_key < best_choice[0]:
+                    best_choice = (candidate_sort_key, index, next_option)
+
+            if best_choice is None:
+                break
+
+            _, selected_index, selected_option = best_choice
+            current_duration = active_options[selected_index].duration
+            active_options[selected_index] = selected_option
+            total_duration = round(total_duration - current_duration + selected_option.duration, 2)
+
+    if total_duration < preferred_lower_bound:
+        _apply_adjustments(expand=True, boundary=preferred_lower_bound, target_total=float(target_duration))
+    elif total_duration > preferred_upper_bound:
+        _apply_adjustments(expand=False, boundary=preferred_upper_bound, target_total=float(target_duration))
+
+    if total_duration < target_duration - 0.25:
+        _apply_adjustments(
+            expand=True,
+            boundary=min(float(target_duration), preferred_upper_bound),
+            target_total=float(target_duration),
+        )
+    elif total_duration > target_duration + 0.25:
+        _apply_adjustments(
+            expand=False,
+            boundary=max(float(target_duration), preferred_lower_bound),
+            target_total=float(target_duration),
+        )
+
+    resolved_candidates = [
+        _ResolvedTimelineCandidate(candidate=candidate, role=role, option=option)
+        for candidate, role, option in zip(selected_candidates, roles, active_options)
+    ]
+
+    if abs(total_duration - original_total) <= 0.01:
+        return resolved_candidates, None
+
+    return (
+        resolved_candidates,
+        (
+            f"Duration closure adjusted the selected candidate set from {original_total:.2f}s "
+            f"to {total_duration:.2f}s around the {target_duration}s target."
+        ),
+    )
 
 
 def _role_to_goal(role: str) -> str:
@@ -416,7 +812,7 @@ def _select_llm_candidates(
         return []
 
     upper_bound = target_duration + 5
-    lower_bound = max(5.0, target_duration - 6.0)
+    lower_bound, _ = _preferred_duration_window(target_duration)
     locked_candidate_ids = set(planner_memory.locked_elements.must_keep_candidate_ids) if planner_memory else set()
     forbidden_candidate_ids = set(planner_memory.locked_elements.forbidden_candidate_ids) if planner_memory else set()
 
@@ -434,7 +830,8 @@ def _select_llm_candidates(
             return False
 
         candidate_duration = _candidate_target_duration(candidate)
-        if selected and total_duration + candidate_duration > upper_bound and not candidate.must_keep:
+        candidate_min_duration = round(candidate.trim_policy.min_duration, 2)
+        if selected and total_duration + candidate_min_duration > upper_bound and not candidate.must_keep:
             return False
 
         selected.append(candidate)
@@ -561,46 +958,47 @@ def _build_source_refs_for_candidate(
 
 
 def _build_llm_beats_and_items(
-    selected_candidates: list[LLMHighlightCandidate],
-    fine_grained_units: list[FineGrainedUnit] | None,
+    resolved_candidates: list[_ResolvedTimelineCandidate],
+    *,
+    allow_subtitles: bool,
 ) -> tuple[list[PlanningBeat], list[TimelineItem]]:
     """Build richer beats and timeline items from the selected LLM candidate set."""
 
     beats: list[PlanningBeat] = []
     timeline_items: list[TimelineItem] = []
-    total = len(selected_candidates)
-
-    for index, candidate in enumerate(selected_candidates, start=1):
-        role = _llm_role_for_candidate(candidate, order=index, total=total)
+    for index, resolved_candidate in enumerate(resolved_candidates, start=1):
+        candidate = resolved_candidate.candidate
+        role = resolved_candidate.role
+        option = resolved_candidate.option
         beat_id = f"beat_{index:02d}"
         beat = PlanningBeat(
             beat_id=beat_id,
             order=index,
             role=role,
             goal=_role_to_goal(role),
-            target_duration=_candidate_target_duration(candidate),
+            target_duration=option.duration,
             summary=_compact_text(candidate.summary or candidate.transcript_excerpt, limit=120),
             source_candidate_ids=[candidate.candidate_id],
             notes=[candidate.reason],
         )
         beats.append(beat)
 
-        source_refs, assembly_mode = _build_source_refs_for_candidate(candidate, fine_grained_units=fine_grained_units)
-        text = " ".join(reference.text.strip() for reference in source_refs if reference.text.strip()) or candidate.transcript_excerpt
+        text = option.text.strip() or candidate.transcript_excerpt
+        subtitle_text = _compact_text(text.strip() or candidate.transcript_excerpt, limit=80) if allow_subtitles else None
         timeline_items.append(
             TimelineItem(
                 item_id=f"item_{index:02d}",
                 beat_id=beat_id,
                 purpose=role,
-                assembly_mode=assembly_mode,
-                source_start=round(min(reference.start for reference in source_refs), 2),
-                source_end=round(max(reference.end for reference in source_refs), 2),
-                duration=_candidate_target_duration(candidate),
+                assembly_mode=option.assembly_mode,
+                source_start=option.start,
+                source_end=option.end,
+                duration=option.duration,
                 candidate_ids=[candidate.candidate_id],
-                source_unit_ids=[reference.ref_id for reference in source_refs if reference.ref_type == "unit"],
-                source_refs=source_refs,
+                source_unit_ids=list(option.source_unit_ids),
+                source_refs=list(option.source_refs),
                 text=text.strip(),
-                subtitle=_compact_text(text.strip() or candidate.transcript_excerpt, limit=80),
+                subtitle=subtitle_text,
                 score=round(candidate.scores.overall, 2),
                 transition=candidate.transition_hint,
                 reason=candidate.reason,
@@ -640,6 +1038,7 @@ def _build_rule_based_richer_plan(
 
     beats: list[PlanningBeat] = []
     timeline_items: list[TimelineItem] = []
+    allow_subtitles = transcript.has_content()
     for index, candidate in enumerate(selected_candidates, start=1):
         item_purpose = _rule_candidate_purpose(candidate=candidate, is_first_item=index == 1)
         item_text = candidate.text.strip()
@@ -666,7 +1065,7 @@ def _build_rule_based_richer_plan(
                 source_end=round(candidate.end, 2),
                 duration=item_duration,
                 text=item_text,
-                subtitle=item_text,
+                subtitle=item_text if allow_subtitles else None,
                 score=round(candidate.score, 2),
                 transition="straight_cut",
                 reason=candidate.reason,
@@ -742,6 +1141,7 @@ def build_editing_plan(
         retrieved_context=retrieved_context,
         planner_memory=planner_memory,
     )
+    allow_subtitles = transcript.has_content()
     compressed_context = build_compressed_planning_context(
         user_request=user_request,
         ranked_candidates=ranked_llm_candidates,
@@ -770,10 +1170,17 @@ def build_editing_plan(
             retrieved_context=retrieved_context,
         )
 
-    beats, timeline_items = _build_llm_beats_and_items(
+    resolved_candidates, duration_closure_note = _resolve_duration_closed_candidates(
         selected_candidates=selected_candidates,
+        target_duration=user_request.target_duration,
         fine_grained_units=fine_grained_units,
     )
+    beats, timeline_items = _build_llm_beats_and_items(
+        resolved_candidates=resolved_candidates,
+        allow_subtitles=allow_subtitles,
+    )
+    plan_total_duration = round(sum(item.duration for item in timeline_items), 2)
+    preferred_lower_bound, preferred_upper_bound = _preferred_duration_window(user_request.target_duration)
 
     notes = [
         f"Target platform: {user_request.target_platform}.",
@@ -809,16 +1216,24 @@ def build_editing_plan(
             + ", ".join(risk.message for risk in compressed_context.risks[:2])
             + "."
         )
+    if duration_closure_note:
+        notes.append(duration_closure_note)
+
+    warnings: list[str] = []
+    if plan_total_duration < preferred_lower_bound or plan_total_duration > preferred_upper_bound:
+        warnings.append(
+            f"Planner could only close duration to {plan_total_duration:.2f}s; preferred window is {preferred_lower_bound:.2f}-{preferred_upper_bound:.2f}s."
+        )
 
     return EditingPlan(
         task_id=task_id,
         plan_version=max(1, (planner_memory.current_plan_version + 1) if planner_memory is not None else 1),
         target_duration=user_request.target_duration,
-        total_duration=round(sum(item.duration for item in timeline_items), 2),
+        total_duration=plan_total_duration,
         beats=beats,
         timeline_items=timeline_items,
         editing_notes=notes,
-        warnings=[],
+        warnings=warnings,
         strategy="llm_montage_planner",
         generation_mode="stub",
         source_candidate_count=len(candidates.candidates),

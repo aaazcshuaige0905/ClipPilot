@@ -63,7 +63,7 @@ class TimelineItem(BaseModel):
     source_unit_ids: list[str] = Field(default_factory=list)
     source_refs: list[TimelineSourceRef] = Field(default_factory=list)
     text: str = Field(..., min_length=1)
-    subtitle: str = Field(..., min_length=1)
+    subtitle: str | None = Field(default=None)
     score: float = Field(..., ge=0.0, le=1.0)
     transition: str = Field(default="straight_cut", min_length=1)
     reason: str = Field(..., min_length=1)

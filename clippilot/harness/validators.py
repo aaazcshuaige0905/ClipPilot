@@ -6,12 +6,16 @@ from clippilot.schemas.transcript import TranscriptResult
 
 
 def validate_transcript_not_empty(transcript: TranscriptResult) -> None:
-    """Ensure that a transcript contains at least one non-empty segment."""
+    """Ensure that a transcript is structurally valid, while allowing optional ASR outcomes."""
 
-    if not transcript.segments:
-        raise ClipPilotValidationError("Transcript does not contain any segments.")
-    if not transcript.full_text.strip():
-        raise ClipPilotValidationError("Transcript full_text is empty.")
+    if transcript.status not in {"completed", "no_audio", "no_speech", "failed"}:
+        raise ClipPilotValidationError(f"Transcript status is unsupported: {transcript.status}")
+
+    if transcript.status == "completed":
+        if not transcript.segments:
+            raise ClipPilotValidationError("Transcript does not contain any segments.")
+        if not transcript.full_text.strip():
+            raise ClipPilotValidationError("Transcript full_text is empty.")
 
     for segment in transcript.segments:
         if segment.end <= segment.start:

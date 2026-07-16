@@ -14,6 +14,7 @@ from clippilot.schemas.task_result import (
 )
 from clippilot.schemas.transcript import TranscriptResult, TranscriptSegment
 from clippilot.schemas.user_request import UserRequest
+from clippilot.schemas.video_frames import SampledFrame, SampledFramesResult
 from clippilot.schemas.video_info import VideoInfo
 
 __all__ = [
@@ -36,5 +37,7 @@ __all__ = [
     "TranscriptResult",
     "TranscriptSegment",
     "UserRequest",
+    "SampledFrame",
+    "SampledFramesResult",
     "VideoInfo",
 ]

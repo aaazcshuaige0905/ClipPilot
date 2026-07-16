@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field, model_validator
 from clippilot.rag.schemas import RetrievedContext
 from clippilot.schemas.transcript import TranscriptResult
 from clippilot.schemas.user_request import UserRequest
+from clippilot.schemas.video_frames import SampledFramesResult
 from clippilot.schemas.video_info import VideoInfo
 
 
@@ -14,7 +15,10 @@ class ProjectPaths(BaseModel):
     raw_video: str
     audio: str | None = None
     transcript: str | None = None
+    sampled_frames: str | None = None
+    content_analysis: str | None = None
     timeline: str | None = None
+    llm_candidates: str | None = None
     retrieved_context: str | None = None
     final_video: str | None = None
 
@@ -181,6 +185,7 @@ class ProjectState(BaseModel):
     video_metadata: VideoInfo | None = None
     transcript: TranscriptResult | None = None
     fine_grained_units: list[FineGrainedUnit] | None = None
+    sampled_frames: SampledFramesResult | None = None
     content_analysis: ContentAnalysis | None = None
     retrieved_context: RetrievedContext | None = None
     timeline: VideoTimeline | None = None

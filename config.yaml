@@ -16,7 +16,7 @@ video:
   max_duration_seconds: 600
 
 asr:
-  provider: mock
+  provider: faster-whisper
   whisper_model: base
 
 highlight:
@@ -40,3 +40,33 @@ embedding:
   qwen_dimensions: 1024
   qwen_base_url: https://dashscope.aliyuncs.com
   qwen_embedding_api_path: /api/v1/services/embeddings/text-embedding/text-embedding
+
+video_understanding:
+  enabled: false
+  provider: qwen
+  model: qwen3.7-plus
+  base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+  api_path: /chat/completions
+  timeout_seconds: 180
+  timeline_max_tokens: 7000
+  highlight_max_tokens: 6000
+  repair_max_tokens: 4000
+  max_frames: 12
+  frame_interval_seconds: 3.0
+  window_duration_seconds: 48
+  window_overlap_seconds: 3
+  proxy_height: 360
+  window_fps: 2
+  window_min_pixels: 65536
+  window_max_pixels: 262144
+  window_concurrency: 4
+  window_max_tokens: 6000
+  global_max_tokens: 6000
+  refinement_max_candidates: 10
+  refinement_padding_seconds: 3
+  refinement_merge_gap_seconds: 3
+  refinement_max_group_duration_seconds: 30
+  refinement_fps: 4
+  refinement_concurrency: 4
+  refinement_max_tokens: 4000
+  max_base64_bytes: 9000000

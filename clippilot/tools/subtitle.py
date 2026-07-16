@@ -10,7 +10,7 @@ from clippilot.schemas.editing_plan import EditingPlan
 class SubtitleGenerationResult:
     """Represent the outcome of generating an SRT file from an editing plan."""
 
-    subtitle_path: str
+    subtitle_path: str | None
     subtitle_count: int
     success: bool
 
@@ -63,26 +63,38 @@ def generate_srt_from_editing_plan(
 
     lines: list[str] = []
     timeline_cursor = 0.0
+    subtitle_count = 0
 
     for index, item in enumerate(plan.timeline_items, start=1):
         start_time = timeline_cursor
         end_time = round(start_time + item.duration, 3)
-        subtitle_text = item.subtitle.strip() or item.text.strip()
+        subtitle_text = str(item.subtitle or "").strip()
+        if not subtitle_text:
+            timeline_cursor = end_time
+            continue
 
         lines.extend(
             [
-                str(index),
+                str(subtitle_count + 1),
                 f"{seconds_to_srt_time(start_time)} --> {seconds_to_srt_time(end_time)}",
                 subtitle_text,
                 "",
             ]
         )
         timeline_cursor = end_time
+        subtitle_count += 1
+
+    if not lines:
+        return SubtitleGenerationResult(
+            subtitle_path=None,
+            subtitle_count=0,
+            success=True,
+        )
 
     output_path.write_text("\n".join(lines), encoding="utf-8")
     return SubtitleGenerationResult(
         subtitle_path=str(output_path),
-        subtitle_count=len(plan.timeline_items),
+        subtitle_count=subtitle_count,
         success=True,
     )
 

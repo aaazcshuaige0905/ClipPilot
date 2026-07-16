@@ -134,7 +134,7 @@ def execute_editing_plan(
     errors: list[str] = []
     successful_item_paths: list[str] = []
     final_video_path = str(task_paths.final_video_path)
-    subtitle_path = str(task_paths.subtitle_path)
+    subtitle_path: str | None = None
     burned_video_path = str(task_paths.burned_video_path) if need_burn_subtitle else None
 
     for item in plan.timeline_items:
@@ -197,7 +197,7 @@ def execute_editing_plan(
         errors.append(f"Subtitle generation failed: {exc}")
 
     if need_burn_subtitle:
-        if Path(final_video_path).exists() and Path(subtitle_path).exists():
+        if subtitle_path and Path(final_video_path).exists() and Path(subtitle_path).exists():
             try:
                 burn_result = burn_subtitles_to_video(
                     input_video_path=final_video_path,
@@ -209,8 +209,10 @@ def execute_editing_plan(
                     warnings.append(f"Subtitle burning failed: {burn_result.error}")
             except Exception as exc:
                 warnings.append(f"Subtitle burning failed unexpectedly: {exc}")
-        else:
+        elif subtitle_path:
             warnings.append("Subtitle burning was skipped because final video or subtitle file was unavailable.")
+        else:
+            burned_video_path = None
 
     status = "completed" if Path(final_video_path).exists() and not errors else "failed"
     return ExecutionReport(

@@ -4,6 +4,7 @@ import re
 from pathlib import Path
 from typing import TypedDict
 
+from clippilot.rag.metadata_normalization import normalize_language, normalize_platform, normalize_style
 from clippilot.rag.schemas import KnowledgeChunk
 
 MAX_CHUNK_CHARS = 320
@@ -122,9 +123,9 @@ def _infer_chunk_metadata(
     combined = " ".join(item for item in (source_name, title, text) if item)
     knowledge_type = str(base_metadata.get("knowledge_type") or "strategy_rule")
     strategy_type = str(_infer_value(combined, STRATEGY_HINTS) or base_metadata.get("strategy_type") or knowledge_type)
-    platform = str(base_metadata.get("platform") or _infer_value(combined, PLATFORM_KEYWORDS) or "") or None
-    language = str(base_metadata.get("language") or _infer_value(combined, LANGUAGE_KEYWORDS) or "") or None
-    style = str(base_metadata.get("style") or _infer_value(combined, STYLE_KEYWORDS) or "") or None
+    platform = normalize_platform(str(base_metadata.get("platform") or _infer_value(combined, PLATFORM_KEYWORDS) or "") or None)
+    language = normalize_language(str(base_metadata.get("language") or _infer_value(combined, LANGUAGE_KEYWORDS) or "") or None)
+    style = normalize_style(str(base_metadata.get("style") or _infer_value(combined, STYLE_KEYWORDS) or "") or None)
     duration_band = str(base_metadata.get("duration_band") or _infer_value(combined, DURATION_HINTS) or "") or None
     tags = sorted(
         {

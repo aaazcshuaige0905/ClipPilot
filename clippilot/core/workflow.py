@@ -9,7 +9,15 @@ else:
 from clippilot.agents.executor_agent import execute_editing_plan
 from clippilot.agents.planner_agent import build_editing_plan
 from clippilot.agents.review_agent import review_task_output
-from clippilot.agents.video_understanding_agent import analyze_video_understanding
+from clippilot.agents.video_understanding_agent import (
+    aggregate_window_understandings,
+    analyze_video_understanding,
+    build_candidate_refinement_groups,
+    merge_windowed_video_understanding_outputs,
+    refine_candidate_group,
+    understand_video_window,
+)
+from clippilot.core.parallel_runner import run_bounded_jobs
 from clippilot.core.memory_manager import (
     build_initial_planner_memory,
     record_plan_generation,
@@ -29,6 +37,7 @@ from clippilot.harness.validators import (
 from clippilot.schemas.editing_plan import EditingPlan, HighlightCandidatesResult
 from clippilot.schemas.execution_report import ExecutionReport
 from clippilot.schemas.project_state import (
+    ContentAnalysis,
     FineGrainedUnit,
     LLMHighlightCandidate,
     ProjectPaths,
@@ -39,13 +48,17 @@ from clippilot.schemas.review_report import ReviewReport
 from clippilot.schemas.task_result import TaskResult
 from clippilot.schemas.transcript import TranscriptResult
 from clippilot.schemas.user_request import UserRequest
+from clippilot.schemas.video_frames import SampledFramesResult
 from clippilot.schemas.video_info import VideoInfo
+from clippilot.schemas.video_understanding import CoarseHighlightCandidate, VideoWindow
 from clippilot.storage.path_manager import AppSettings, load_settings
 from clippilot.storage.task_storage import TaskStorage
 from clippilot.tools.audio_extract import extract_audio_track
+from clippilot.tools.frame_sampler import sample_video_frames
 from clippilot.tools.highlight import generate_highlight_candidates
-from clippilot.tools.transcribe import transcribe_video
+from clippilot.tools.transcribe import build_skipped_transcript, transcribe_video
 from clippilot.tools.video_info import extract_video_info, validate_supported_extension, validate_video_duration
+from clippilot.tools.video_segmenter import create_video_windows
 
 
 def _as_relative_output_path(storage: TaskStorage, output_path: str | None) -> str | None:
@@ -249,26 +262,41 @@ def _process_audio(storage: TaskStorage, context: TaskContext, video_info: Video
     return relative_audio_path
 
 
-def _process_transcript(storage: TaskStorage, context: TaskContext, settings: AppSettings) -> TranscriptResult:
+def _process_transcript(
+    storage: TaskStorage,
+    context: TaskContext,
+    settings: AppSettings,
+    video_info: VideoInfo,
+) -> TranscriptResult:
     """Generate, validate, and persist transcript artifacts."""
 
-    transcript = transcribe_video(
-        video_path=context.paths.source_video_path,
-        task_id=context.task_id,
-        language=context.request.language,
-        provider=settings.asr_provider,
-        settings=settings,
-    )
+    if not video_info.has_audio:
+        transcript = build_skipped_transcript(
+            video_id=context.task_id,
+            provider=settings.asr_provider,
+            status="no_audio",
+            warning="ASR skipped because the source video does not contain an audio track.",
+        )
+    else:
+        transcript_input_path = context.paths.audio_path if context.paths.audio_path.exists() else context.paths.source_video_path
+        transcript = transcribe_video(
+            video_path=transcript_input_path,
+            task_id=context.task_id,
+            language=context.request.language,
+            provider=settings.asr_provider,
+            settings=settings,
+        )
     validate_transcript_not_empty(transcript)
     transcript_path = storage.save_transcript(transcript, context.paths)
     validate_output_file_exists(transcript_path)
     if context.project_state is not None:
-        fine_grained_units = _build_fine_grained_units(transcript)
+        fine_grained_units = _build_fine_grained_units(transcript) if transcript.has_content() else []
         context.project_state.transcript = transcript
         context.project_state.fine_grained_units = fine_grained_units
         context.project_state.paths.transcript = storage.as_relative(transcript_path)
         validation_result = context.project_state.validation_result or {}
-        validation_result["transcript_non_empty"] = True
+        validation_result["transcript_status"] = transcript.status
+        validation_result["transcript_non_empty"] = transcript.has_content()
         validation_result["fine_grained_unit_count"] = len(fine_grained_units)
         context.project_state.validation_result = validation_result
     _register_artifact_once(
@@ -277,10 +305,219 @@ def _process_transcript(storage: TaskStorage, context: TaskContext, settings: Ap
         storage.as_relative(transcript_path),
         stage=WorkflowStage.TRANSCRIBED.value,
     )
-    log_stage_transition(context, WorkflowStage.TRANSCRIBED.value, "Transcript generated and saved.")
+    transcript_message = (
+        "Transcript generated and saved."
+        if transcript.has_content()
+        else f"Transcript saved without subtitle text because ASR status is {transcript.status}."
+    )
+    log_stage_transition(context, WorkflowStage.TRANSCRIBED.value, transcript_message)
     log_stage_transition(context, WorkflowStage.PREPROCESSED.value, "Video preprocessing completed.")
     _save_project_state(storage, context)
     return transcript
+
+
+def _process_sampled_frames(
+    storage: TaskStorage,
+    context: TaskContext,
+    video_info: VideoInfo,
+    settings: AppSettings | None = None,
+) -> SampledFramesResult:
+    """Sample local video frames, persist their manifest, and attach them to shared task state."""
+
+    sampled_frames = sample_video_frames(
+        video_path=context.paths.source_video_path,
+        output_dir=context.paths.understanding_frames_dir,
+        video_info=video_info,
+        video_id=context.task_id,
+        max_frames=(settings.video_understanding_max_frames if settings is not None else 12),
+        interval_seconds=(settings.video_understanding_frame_interval_seconds if settings is not None else 3.0),
+    )
+    normalized_frames = sampled_frames.model_copy(
+        update={
+            "frames": [
+                frame.model_copy(update={"image_path": storage.as_relative(Path(frame.image_path))})
+                for frame in sampled_frames.frames
+            ]
+        }
+    )
+    sampled_frames_path = storage.save_sampled_frames(normalized_frames, context.paths)
+    validate_output_file_exists(sampled_frames_path)
+    if context.project_state is not None:
+        context.project_state.sampled_frames = normalized_frames
+        context.project_state.paths.sampled_frames = storage.as_relative(sampled_frames_path)
+    _register_artifact_once(
+        context,
+        "sampled_frames",
+        storage.as_relative(sampled_frames_path),
+        stage=WorkflowStage.PREPROCESSED.value,
+    )
+    for frame in normalized_frames.frames:
+        _register_artifact_once(
+            context,
+            frame.frame_id,
+            frame.image_path,
+            stage=WorkflowStage.PREPROCESSED.value,
+        )
+    log_stage_transition(
+        context,
+        WorkflowStage.PREPROCESSED.value,
+        f"Sampled {normalized_frames.frame_count} visual frames for video understanding.",
+    )
+    _save_project_state(storage, context)
+    return normalized_frames
+
+
+def _process_video_windows(
+    storage: TaskStorage,
+    context: TaskContext,
+    video_info: VideoInfo,
+    settings: AppSettings,
+) -> list[VideoWindow]:
+    """Create source-aligned proxy windows for the live long-video understanding path."""
+
+    units = context.project_state.fine_grained_units if context.project_state is not None else []
+    windows = create_video_windows(
+        source_video_path=context.paths.source_video_path,
+        output_dir=context.paths.understanding_windows_dir,
+        video_info=video_info,
+        fine_grained_units=units or [],
+        window_duration_seconds=settings.video_understanding_window_duration_seconds,
+        overlap_seconds=settings.video_understanding_window_overlap_seconds,
+        proxy_height=settings.video_understanding_proxy_height,
+        max_encoded_bytes=settings.video_understanding_max_base64_bytes,
+    )
+    storage.save_video_windows(
+        {"windows": [window.model_dump() for window in windows]},
+        context.paths,
+    )
+    _register_artifact_once(
+        context,
+        "video_windows",
+        storage.as_relative(context.paths.video_windows_path),
+        stage=WorkflowStage.PREPROCESSED.value,
+    )
+    log_stage_transition(
+        context,
+        WorkflowStage.PREPROCESSED.value,
+        f"Created {len(windows)} overlapping proxy-video windows for live understanding.",
+    )
+    return windows
+
+
+def _run_windowed_video_understanding(
+    storage: TaskStorage,
+    context: TaskContext,
+    video_info: VideoInfo,
+    windows: list[VideoWindow],
+    settings: AppSettings,
+) -> tuple[ContentAnalysis, VideoTimeline, list[LLMHighlightCandidate], dict, dict]:
+    """Run bounded window and refinement jobs, persisting their artifacts on the main thread."""
+
+    units = context.project_state.fine_grained_units if context.project_state is not None else []
+
+    def _window_worker(window: VideoWindow):
+        return understand_video_window(window, context.request, video_info, units or [], settings)
+
+    window_jobs = run_bounded_jobs(
+        windows,
+        _window_worker,
+        max_workers=settings.video_understanding_window_concurrency,
+    )
+    window_results = []
+    window_raw: dict[str, Any] = {}
+    for job in window_jobs:
+        if job.error is not None or job.result is None:
+            raise RuntimeError(f"Unexpected unhandled failure for {job.job.window_id}: {job.error}")
+        result, request_payload, raw_response = job.result
+        window_results.append(result)
+        storage.save_window_request(job.job.window_id, request_payload, context.paths)
+        storage.save_window_response(job.job.window_id, raw_response, context.paths)
+        storage.save_window_result(job.job.window_id, result, context.paths)
+        window_raw[job.job.window_id] = raw_response
+    window_results.sort(key=lambda item: item.order)
+
+    global_result, global_request, global_raw = aggregate_window_understandings(
+        window_results,
+        context.request,
+        video_info,
+        settings,
+    )
+    storage.save_global_understanding_request(global_request, context.paths)
+    storage.save_global_understanding_response(global_raw, context.paths)
+    storage.save_global_understanding(global_result, context.paths)
+
+    coarse_candidates: list[CoarseHighlightCandidate] = [
+        candidate for result in window_results for candidate in result.coarse_candidates
+    ]
+    groups = build_candidate_refinement_groups(
+        coarse_candidates,
+        global_result.refinement_candidate_ids,
+        video_info.duration_seconds,
+        settings,
+    )
+    coarse_by_id = {candidate.candidate_id: candidate for candidate in coarse_candidates}
+
+    def _refinement_worker(group):
+        group_candidates = [
+            coarse_by_id[candidate_id]
+            for candidate_id in group.candidate_ids
+            if candidate_id in coarse_by_id
+        ]
+        return refine_candidate_group(
+            group,
+            group_candidates,
+            context.paths.source_video_path,
+            context.paths.refinement_dir,
+            units or [],
+            settings,
+        )
+
+    refinement_jobs = run_bounded_jobs(
+        groups,
+        _refinement_worker,
+        max_workers=settings.video_understanding_refinement_concurrency,
+    )
+    refined_candidates = []
+    refinement_raw: dict[str, Any] = {}
+    for job in refinement_jobs:
+        if job.error is not None or job.result is None:
+            global_result.coverage_warnings.append(
+                f"Refinement group {job.job.group_id} failed unexpectedly: {job.error}"
+            )
+            continue
+        refined, rendered_group, request_payload, raw_response = job.result
+        refined_candidates.extend(refined)
+        storage.save_refinement_request(rendered_group.group_id, request_payload, context.paths)
+        storage.save_refinement_response(rendered_group.group_id, raw_response, context.paths)
+        refinement_raw[rendered_group.group_id] = raw_response
+    storage.save_refined_candidates(
+        {"candidates": [candidate.model_dump() for candidate in refined_candidates]},
+        context.paths,
+    )
+    content_analysis, timeline, candidates = merge_windowed_video_understanding_outputs(
+        global_result,
+        coarse_candidates,
+        refined_candidates,
+        context.request,
+        settings,
+    )
+    logical_request = {
+        "mode": "windowed_video_understanding_v1",
+        "window_count": len(windows),
+        "window_ids": [window.window_id for window in windows],
+        "global_request": global_request,
+        "refinement_group_ids": [group.group_id for group in groups],
+    }
+    raw_response = {
+        "mode": "windowed_video_understanding_v1",
+        "window_results": [result.model_dump() for result in window_results],
+        "window_responses": window_raw,
+        "global_result": global_result.model_dump(),
+        "global_response": global_raw,
+        "refinement_responses": refinement_raw,
+        "refined_candidates": [candidate.model_dump() for candidate in refined_candidates],
+    }
+    return content_analysis, timeline, candidates, logical_request, raw_response
 
 
 def _process_video_understanding(
@@ -288,27 +525,70 @@ def _process_video_understanding(
     context: TaskContext,
     video_info: VideoInfo,
     transcript: TranscriptResult,
+    sampled_frames: SampledFramesResult | None = None,
+    video_windows: list[VideoWindow] | None = None,
+    settings: AppSettings | None = None,
 ) -> tuple[VideoTimeline, list[LLMHighlightCandidate]]:
     """Generate transcript-backed video understanding outputs and write them into the global state."""
 
     fine_grained_units = context.project_state.fine_grained_units if context.project_state is not None else None
-    content_analysis, timeline, highlight_candidates_llm = analyze_video_understanding(
-        video_path=context.paths.source_video_path,
-        user_request=context.request,
-        video_info=video_info,
-        transcript=transcript,
-        fine_grained_units=fine_grained_units or [],
-    )
+    if video_windows and settings is not None:
+        content_analysis, timeline, highlight_candidates_llm, request_payload, raw_response = (
+            _run_windowed_video_understanding(storage, context, video_info, video_windows, settings)
+        )
+    else:
+        content_analysis, timeline, highlight_candidates_llm, request_payload, raw_response = analyze_video_understanding(
+            video_path=context.paths.source_video_path,
+            user_request=context.request,
+            video_info=video_info,
+            transcript=transcript,
+            fine_grained_units=fine_grained_units or [],
+            sampled_frames=sampled_frames,
+            settings=settings,
+        )
+    request_path = storage.save_video_understanding_request(request_payload, context.paths)
+    response_raw_path = storage.save_video_understanding_response_raw(raw_response, context.paths)
+    content_analysis_path = storage.save_content_analysis(content_analysis, context.paths)
     timeline_path = storage.save_timeline(timeline, context.paths)
+    llm_candidates_path = storage.save_llm_candidates(
+        {"candidates": [candidate.model_dump() for candidate in highlight_candidates_llm]},
+        context.paths,
+    )
     if context.project_state is not None:
         context.project_state.content_analysis = content_analysis
         context.project_state.timeline = timeline
         context.project_state.highlight_candidates_llm = highlight_candidates_llm
+        context.project_state.paths.content_analysis = storage.as_relative(content_analysis_path)
         context.project_state.paths.timeline = storage.as_relative(timeline_path)
+        context.project_state.paths.llm_candidates = storage.as_relative(llm_candidates_path)
+    _register_artifact_once(
+        context,
+        "video_understanding_request",
+        storage.as_relative(request_path),
+        stage=WorkflowStage.VIDEO_UNDERSTOOD.value,
+    )
+    _register_artifact_once(
+        context,
+        "content_analysis",
+        storage.as_relative(content_analysis_path),
+        stage=WorkflowStage.VIDEO_UNDERSTOOD.value,
+    )
     _register_artifact_once(
         context,
         "video_timeline",
         storage.as_relative(timeline_path),
+        stage=WorkflowStage.VIDEO_UNDERSTOOD.value,
+    )
+    _register_artifact_once(
+        context,
+        "llm_highlight_candidates",
+        storage.as_relative(llm_candidates_path),
+        stage=WorkflowStage.VIDEO_UNDERSTOOD.value,
+    )
+    _register_artifact_once(
+        context,
+        "video_understanding_response_raw",
+        storage.as_relative(response_raw_path),
         stage=WorkflowStage.VIDEO_UNDERSTOOD.value,
     )
     log_stage_transition(context, WorkflowStage.VIDEO_UNDERSTOOD.value, "Video understanding completed and timeline saved.")
@@ -366,6 +646,24 @@ def _process_highlight_candidates(
     transcript: TranscriptResult,
 ) -> HighlightCandidatesResult:
     """Generate, validate, and persist highlight candidate artifacts."""
+
+    if not transcript.has_content():
+        candidates = HighlightCandidatesResult(video_id=transcript.video_id, candidates=[])
+        candidates_path = storage.save_candidates(candidates, context.paths)
+        validate_output_file_exists(candidates_path)
+        _register_artifact_once(
+            context,
+            "highlight_candidates",
+            storage.as_relative(candidates_path),
+            stage=WorkflowStage.HIGHLIGHT_CANDIDATES_GENERATED.value,
+        )
+        log_stage_transition(
+            context,
+            WorkflowStage.HIGHLIGHT_CANDIDATES_GENERATED.value,
+            "Highlight generation skipped because the transcript did not contain usable ASR text.",
+        )
+        _save_project_state(storage, context)
+        return candidates
 
     candidates = generate_highlight_candidates(
         transcript=transcript,
@@ -631,14 +929,43 @@ def run_stage1_workflow(
         _ingest_source_video(storage=storage, context=context, upload_file=upload_file)
         video_info = _process_video_info(storage=storage, context=context, settings=active_settings)
         _process_audio(storage=storage, context=context, video_info=video_info)
-        transcript = _process_transcript(storage=storage, context=context, settings=active_settings)
-        _process_retrieved_context(storage=storage, context=context, settings=active_settings)
-        _process_video_understanding(
+        transcript = _process_transcript(
             storage=storage,
             context=context,
+            settings=active_settings,
             video_info=video_info,
-            transcript=transcript,
         )
+        _process_retrieved_context(storage=storage, context=context, settings=active_settings)
+        if active_settings.video_understanding_enabled and active_settings.video_understanding_api_key:
+            video_windows = _process_video_windows(
+                storage=storage,
+                context=context,
+                video_info=video_info,
+                settings=active_settings,
+            )
+            _process_video_understanding(
+                storage=storage,
+                context=context,
+                video_info=video_info,
+                transcript=transcript,
+                video_windows=video_windows,
+                settings=active_settings,
+            )
+        else:
+            sampled_frames = _process_sampled_frames(
+                storage=storage,
+                context=context,
+                video_info=video_info,
+                settings=active_settings,
+            )
+            _process_video_understanding(
+                storage=storage,
+                context=context,
+                video_info=video_info,
+                transcript=transcript,
+                sampled_frames=sampled_frames,
+                settings=active_settings,
+            )
         candidates = _process_highlight_candidates(
             storage=storage,
             context=context,

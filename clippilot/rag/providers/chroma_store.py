@@ -82,6 +82,10 @@ class ChromaVectorStore:
     def _where_filter(filters: dict[str, str]) -> dict[str, Any] | None:
         """Convert equality filters into a Chroma where clause."""
 
-        if not filters:
+        active_filters = {key: value for key, value in filters.items() if value}
+        if not active_filters:
             return None
-        return {key: value for key, value in filters.items() if value}
+        if len(active_filters) == 1:
+            key, value = next(iter(active_filters.items()))
+            return {key: value}
+        return {"$and": [{key: value} for key, value in active_filters.items()]}

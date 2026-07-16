@@ -93,6 +93,16 @@ def _append_suggestion(suggestions: list[str], message: str) -> None:
         suggestions.append(message)
 
 
+def _plan_expects_subtitles(raw_items: list[object]) -> bool:
+    """Return whether the current editing plan contains any actual subtitle text."""
+
+    for item in raw_items:
+        subtitle_text = str(_plan_item_field(item, "subtitle", "") or "").strip()
+        if subtitle_text:
+            return True
+    return False
+
+
 def _score_from_checks(checks: list[ReviewCheck]) -> float:
     """Calculate the review score from failed checks."""
 
@@ -192,20 +202,25 @@ def review_task_output(
         )
     )
 
+    subtitles_expected = _plan_expects_subtitles(raw_items)
     subtitle_exists = subtitle_path is not None and subtitle_path.exists()
     checks.append(
         _check(
             name="subtitle_exists",
-            passed=subtitle_exists,
+            passed=(subtitle_exists if subtitles_expected else True),
             severity=CRITICAL,
             message=(
                 f"Subtitle file exists at {subtitle_path}."
                 if subtitle_exists
-                else "Subtitle file is missing."
+                else (
+                    "Subtitle file is not required because the editing plan did not include subtitle text."
+                    if not subtitles_expected
+                    else "Subtitle file is missing."
+                )
             ),
         )
     )
-    if not subtitle_exists:
+    if subtitles_expected and not subtitle_exists:
         _append_suggestion(suggestions, "Subtitle file is missing. Check subtitle generation in the executor stage.")
 
     editing_plan_has_items = bool(raw_items)
@@ -279,7 +294,7 @@ def review_task_output(
                 "Some timeline items exceed the original video duration. Regenerate the editing plan with valid bounds.",
             )
 
-        subtitle_text = str(_plan_item_field(item, "subtitle", "") or _plan_item_field(item, "text", "") or "").strip()
+        subtitle_text = str(_plan_item_field(item, "subtitle", "") or "").strip()
         character_limit = _subtitle_limit(user.language, subtitle_text)
         subtitle_length_passed = len(subtitle_text) <= character_limit
         checks.append(

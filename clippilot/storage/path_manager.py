@@ -41,6 +41,35 @@ class AppSettings:
     qwen_embedding_base_url: str
     qwen_embedding_api_path: str
     qwen_api_key: str
+    video_understanding_enabled: bool = False
+    video_understanding_provider: str = "qwen"
+    video_understanding_model: str = "qwen3.7-plus"
+    video_understanding_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    video_understanding_api_path: str = "/chat/completions"
+    video_understanding_api_key: str = ""
+    video_understanding_timeout_seconds: int = 180
+    video_understanding_timeline_max_tokens: int = 7000
+    video_understanding_highlight_max_tokens: int = 6000
+    video_understanding_repair_max_tokens: int = 4000
+    video_understanding_max_frames: int = 12
+    video_understanding_frame_interval_seconds: float = 3.0
+    video_understanding_window_duration_seconds: float = 48.0
+    video_understanding_window_overlap_seconds: float = 3.0
+    video_understanding_proxy_height: int = 360
+    video_understanding_window_fps: float = 2.0
+    video_understanding_window_min_pixels: int = 65536
+    video_understanding_window_max_pixels: int = 262144
+    video_understanding_window_concurrency: int = 4
+    video_understanding_window_max_tokens: int = 6000
+    video_understanding_global_max_tokens: int = 6000
+    video_understanding_refinement_max_candidates: int = 10
+    video_understanding_refinement_padding_seconds: float = 3.0
+    video_understanding_refinement_merge_gap_seconds: float = 3.0
+    video_understanding_refinement_max_group_duration_seconds: float = 30.0
+    video_understanding_refinement_fps: float = 4.0
+    video_understanding_refinement_concurrency: int = 4
+    video_understanding_refinement_max_tokens: int = 4000
+    video_understanding_max_base64_bytes: int = 9_000_000
 
 
 @dataclass(frozen=True)
@@ -54,6 +83,12 @@ class TaskPaths:
     transcript_dir: Path
     highlights_dir: Path
     understanding_dir: Path
+    understanding_frames_dir: Path
+    understanding_windows_dir: Path
+    window_requests_dir: Path
+    window_responses_dir: Path
+    window_results_dir: Path
+    refinement_dir: Path
     clips_dir: Path
     final_dir: Path
     plan_dir: Path
@@ -64,7 +99,17 @@ class TaskPaths:
     audio_path: Path
     video_info_path: Path
     transcript_json_path: Path
+    sampled_frames_path: Path
+    content_analysis_path: Path
     timeline_path: Path
+    llm_candidates_path: Path
+    video_understanding_request_path: Path
+    video_understanding_response_raw_path: Path
+    video_windows_path: Path
+    global_understanding_path: Path
+    global_understanding_request_path: Path
+    global_understanding_response_path: Path
+    refined_candidates_path: Path
     retrieved_context_path: Path
     retrieval_trace_path: Path
     highlight_candidates_path: Path
@@ -100,7 +145,7 @@ def _default_config() -> dict:
             "max_duration_seconds": 600,
         },
         "asr": {
-            "provider": "mock",
+            "provider": "faster-whisper",
             "whisper_model": "base",
         },
         "highlight": {
@@ -124,6 +169,33 @@ def _default_config() -> dict:
             "qwen_dimensions": 1024,
             "qwen_base_url": "https://dashscope.aliyuncs.com",
             "qwen_embedding_api_path": "/api/v1/services/embeddings/text-embedding/text-embedding",
+        },
+        "video_understanding": {
+            "enabled": False,
+            "provider": "qwen",
+            "model": "qwen3.7-plus",
+            "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            "api_path": "/chat/completions",
+            "timeout_seconds": 180,
+            "max_frames": 12,
+            "frame_interval_seconds": 3.0,
+            "window_duration_seconds": 48.0,
+            "window_overlap_seconds": 3.0,
+            "proxy_height": 360,
+            "window_fps": 2.0,
+            "window_min_pixels": 65536,
+            "window_max_pixels": 262144,
+            "window_concurrency": 4,
+            "window_max_tokens": 6000,
+            "global_max_tokens": 6000,
+            "refinement_max_candidates": 10,
+            "refinement_padding_seconds": 3.0,
+            "refinement_merge_gap_seconds": 3.0,
+            "refinement_max_group_duration_seconds": 30.0,
+            "refinement_fps": 4.0,
+            "refinement_concurrency": 4,
+            "refinement_max_tokens": 4000,
+            "max_base64_bytes": 9000000,
         },
     }
 
@@ -155,8 +227,12 @@ def load_settings(project_root: Path | None = None) -> AppSettings:
     highlight_config = config["highlight"]
     rag_config = config["rag"]
     embedding_config = config["embedding"]
+    video_understanding_config = config["video_understanding"]
     qwen_api_key = os.getenv("DASHSCOPE_API_KEY", os.getenv("CLIP_PILOT_QWEN_API_KEY", "")).strip()
     qwen_base_url = os.getenv("CLIP_PILOT_QWEN_EMBEDDING_BASE_URL", embedding_config["qwen_base_url"]).strip()
+    video_understanding_api_key = (
+        os.getenv("CLIP_PILOT_VIDEO_UNDERSTANDING_API_KEY", qwen_api_key).strip()
+    )
     return AppSettings(
         project_root=resolved_root,
         config_path=config_path,
@@ -168,7 +244,7 @@ def load_settings(project_root: Path | None = None) -> AppSettings:
         allowed_extensions={item.lower() for item in video_config["allowed_extensions"]},
         min_video_duration_seconds=int(video_config["min_duration_seconds"]),
         max_video_duration_seconds=int(video_config["max_duration_seconds"]),
-        asr_provider=os.getenv("CLIP_PILOT_ASR_PROVIDER", asr_config["provider"]).strip().lower() or "mock",
+        asr_provider=os.getenv("CLIP_PILOT_ASR_PROVIDER", asr_config["provider"]).strip().lower() or "faster-whisper",
         whisper_model=os.getenv("CLIP_PILOT_WHISPER_MODEL", asr_config["whisper_model"]).strip() or "base",
         highlight_min_candidate_duration=float(highlight_config["min_candidate_duration"]),
         highlight_max_candidate_duration=float(highlight_config["max_candidate_duration"]),
@@ -191,6 +267,81 @@ def load_settings(project_root: Path | None = None) -> AppSettings:
         qwen_embedding_api_path=os.getenv("CLIP_PILOT_QWEN_EMBEDDING_API_PATH", embedding_config["qwen_embedding_api_path"]).strip()
         or "/api/v1/services/embeddings/text-embedding/text-embedding",
         qwen_api_key=qwen_api_key,
+        video_understanding_enabled=(
+            os.getenv("CLIP_PILOT_VIDEO_UNDERSTANDING_ENABLED", str(video_understanding_config["enabled"]))
+            .strip()
+            .lower()
+            in {"1", "true", "yes", "on"}
+        ),
+        video_understanding_provider=(
+            os.getenv("CLIP_PILOT_VIDEO_UNDERSTANDING_PROVIDER", video_understanding_config["provider"]).strip().lower()
+            or "qwen"
+        ),
+        video_understanding_model=(
+            os.getenv("CLIP_PILOT_VIDEO_UNDERSTANDING_MODEL", video_understanding_config["model"]).strip()
+            or "qwen3.7-plus"
+        ),
+        video_understanding_base_url=(
+            os.getenv("CLIP_PILOT_VIDEO_UNDERSTANDING_BASE_URL", video_understanding_config["base_url"]).strip()
+            or "https://dashscope.aliyuncs.com/compatible-mode/v1"
+        ),
+        video_understanding_api_path=(
+            os.getenv("CLIP_PILOT_VIDEO_UNDERSTANDING_API_PATH", video_understanding_config["api_path"]).strip()
+            or "/chat/completions"
+        ),
+        video_understanding_api_key=video_understanding_api_key,
+        video_understanding_timeout_seconds=int(
+            os.getenv(
+                "CLIP_PILOT_VIDEO_UNDERSTANDING_TIMEOUT_SECONDS",
+                str(video_understanding_config["timeout_seconds"]),
+            )
+        ),
+        video_understanding_timeline_max_tokens=int(
+            os.getenv(
+                "CLIP_PILOT_VIDEO_UNDERSTANDING_TIMELINE_MAX_TOKENS",
+                str(video_understanding_config.get("timeline_max_tokens", 7000)),
+            )
+        ),
+        video_understanding_highlight_max_tokens=int(
+            os.getenv(
+                "CLIP_PILOT_VIDEO_UNDERSTANDING_HIGHLIGHT_MAX_TOKENS",
+                str(video_understanding_config.get("highlight_max_tokens", 6000)),
+            )
+        ),
+        video_understanding_repair_max_tokens=int(
+            os.getenv(
+                "CLIP_PILOT_VIDEO_UNDERSTANDING_REPAIR_MAX_TOKENS",
+                str(video_understanding_config.get("repair_max_tokens", 4000)),
+            )
+        ),
+        video_understanding_max_frames=int(
+            os.getenv("CLIP_PILOT_VIDEO_UNDERSTANDING_MAX_FRAMES", str(video_understanding_config["max_frames"]))
+        ),
+        video_understanding_frame_interval_seconds=float(
+            os.getenv(
+                "CLIP_PILOT_VIDEO_UNDERSTANDING_FRAME_INTERVAL_SECONDS",
+                str(video_understanding_config["frame_interval_seconds"]),
+            )
+        ),
+        video_understanding_window_duration_seconds=float(video_understanding_config.get("window_duration_seconds", 48.0)),
+        video_understanding_window_overlap_seconds=float(video_understanding_config.get("window_overlap_seconds", 3.0)),
+        video_understanding_proxy_height=int(video_understanding_config.get("proxy_height", 360)),
+        video_understanding_window_fps=float(video_understanding_config.get("window_fps", 2.0)),
+        video_understanding_window_min_pixels=int(video_understanding_config.get("window_min_pixels", 65536)),
+        video_understanding_window_max_pixels=int(video_understanding_config.get("window_max_pixels", 262144)),
+        video_understanding_window_concurrency=int(video_understanding_config.get("window_concurrency", 4)),
+        video_understanding_window_max_tokens=int(video_understanding_config.get("window_max_tokens", 6000)),
+        video_understanding_global_max_tokens=int(video_understanding_config.get("global_max_tokens", 6000)),
+        video_understanding_refinement_max_candidates=int(video_understanding_config.get("refinement_max_candidates", 10)),
+        video_understanding_refinement_padding_seconds=float(video_understanding_config.get("refinement_padding_seconds", 3.0)),
+        video_understanding_refinement_merge_gap_seconds=float(video_understanding_config.get("refinement_merge_gap_seconds", 3.0)),
+        video_understanding_refinement_max_group_duration_seconds=float(
+            video_understanding_config.get("refinement_max_group_duration_seconds", 30.0)
+        ),
+        video_understanding_refinement_fps=float(video_understanding_config.get("refinement_fps", 4.0)),
+        video_understanding_refinement_concurrency=int(video_understanding_config.get("refinement_concurrency", 4)),
+        video_understanding_refinement_max_tokens=int(video_understanding_config.get("refinement_max_tokens", 4000)),
+        video_understanding_max_base64_bytes=int(video_understanding_config.get("max_base64_bytes", 9_000_000)),
     )
 
 
@@ -218,6 +369,12 @@ def build_task_paths(settings: AppSettings, task_id: str, original_file_name: st
     transcript_dir = task_root / "transcript"
     highlights_dir = task_root / "highlights"
     understanding_dir = task_root / "understanding"
+    understanding_frames_dir = understanding_dir / "frames"
+    understanding_windows_dir = understanding_dir / "windows"
+    window_requests_dir = understanding_dir / "window_requests"
+    window_responses_dir = understanding_dir / "window_responses"
+    window_results_dir = understanding_dir / "window_results"
+    refinement_dir = understanding_dir / "refinement"
     clips_dir = task_root / "clips"
     final_dir = task_root / "final"
     plan_dir = task_root / "plan"
@@ -233,6 +390,12 @@ def build_task_paths(settings: AppSettings, task_id: str, original_file_name: st
         transcript_dir=transcript_dir,
         highlights_dir=highlights_dir,
         understanding_dir=understanding_dir,
+        understanding_frames_dir=understanding_frames_dir,
+        understanding_windows_dir=understanding_windows_dir,
+        window_requests_dir=window_requests_dir,
+        window_responses_dir=window_responses_dir,
+        window_results_dir=window_results_dir,
+        refinement_dir=refinement_dir,
         clips_dir=clips_dir,
         final_dir=final_dir,
         plan_dir=plan_dir,
@@ -243,7 +406,17 @@ def build_task_paths(settings: AppSettings, task_id: str, original_file_name: st
         audio_path=audio_dir / "source.wav",
         video_info_path=metadata_dir / "video_info.json",
         transcript_json_path=transcript_dir / "transcript.json",
+        sampled_frames_path=understanding_dir / "sampled_frames.json",
+        content_analysis_path=understanding_dir / "content_analysis.json",
         timeline_path=understanding_dir / "timeline.json",
+        llm_candidates_path=understanding_dir / "highlight_candidates_llm.json",
+        video_understanding_request_path=understanding_dir / "video_understanding_request.json",
+        video_understanding_response_raw_path=understanding_dir / "video_understanding_response_raw.json",
+        video_windows_path=understanding_dir / "video_windows.json",
+        global_understanding_path=understanding_dir / "global_understanding.json",
+        global_understanding_request_path=understanding_dir / "global_understanding_request.json",
+        global_understanding_response_path=understanding_dir / "global_understanding_response.json",
+        refined_candidates_path=understanding_dir / "refined_candidates.json",
         retrieved_context_path=understanding_dir / "retrieved_context.json",
         retrieval_trace_path=understanding_dir / "retrieval_trace.json",
         highlight_candidates_path=highlights_dir / "candidates.json",

@@ -1,721 +1,660 @@
 # ClipPilot 架构说明
 
-## 1. 文档目标
+## 1. 这份文档是给谁看的
 
-本文档用于说明 `ClipPilot` 当前版本的整体架构、模块边界、数据流、任务目录结构和扩展方向。
+这份文档主要给三类人：
 
-当前项目已经从“只有上传接口的 MVP 骨架”升级为一条可真实执行的视频工作流，能够完成：
+- 新接手项目的工程师
+- 需要扩展某个模块的开发者
+- 需要判断“下一步该往哪里演进”的负责人
 
-1. 视频上传与任务创建
-2. 视频元信息提取
-3. ASR 转写
-4. 高光候选识别
-5. 可执行剪辑时间轴规划
-6. 视频裁剪与合并
-7. 字幕文件生成
-8. 可选字幕烧录
-9. 执行报告与任务产物持久化
+阅读目标不是记住每个函数，而是快速回答这几个问题：
 
-项目当前仍然是 Stage 1，但已经具备了后续扩展为 Agentic 多阶段系统的基础边界。
+- 项目现在处于什么阶段
+- 一次任务到底怎么流转
+- 每个目录应该放什么
+- 哪些能力已经真实实现，哪些还只是骨架
+- 如果我要新增一个 provider / agent / 评测指标，应该接在哪里
 
 ---
 
-## 2. 架构设计原则
+## 2. 当前架构定位
 
-### 2.1 单一职责
+`ClipPilot` 当前不是一个“只有 API 外壳的 demo”，也不是一个已经产品化的剪辑平台。
 
-每一层只做一类事情：
+它更准确的定位是：
 
-- `api` 只负责 HTTP 请求入口
-- `core` 只负责工作流编排
-- `schemas` 只负责数据契约
-- `tools` 只负责原子能力
-- `storage` 只负责路径和持久化
-- `harness` 只负责校验和追踪
-- `agents` 负责基于结构化产物做规划、执行、审核
-- `rag` 预留给未来检索增强
+**一套已经打通主链路的 Agentic 视频工作流骨架，正在从规则驱动 MVP 向多 Agent、可修订、可检索增强的系统升级。**
 
-### 2.2 数据契约优先
+当前主链路已经包括：
 
-跨模块数据优先通过 `Pydantic` Schema 传递，避免业务主链路里到处传散乱 `dict`。
+1. 上传与任务创建
+2. 视频元信息提取
+3. 音频抽取
+4. ASR 转写
+5. RAG 上下文检索
+6. transcript-based 视频理解
+7. 高光候选生成
+8. 时间线规划
+9. 媒体执行
+10. 输出审核
+11. 任务产物持久化
 
-### 2.3 每个任务独立目录
+---
 
-每次上传都会创建唯一 `task_id`，所有产物都落到：
+## 3. 架构设计原则
+
+### 3.1 工作流先于模型
+
+项目优先保证：
+
+- 流程能跑
+- 任务可回放
+- 中间产物可调试
+- 数据契约清晰
+
+模型能力是后续增强点，而不是第一优先级。
+
+### 3.2 数据契约优先
+
+跨层传递尽量使用 `Pydantic` schema，而不是散乱的 `dict`。这样做的好处是：
+
+- 模块边界清晰
+- 序列化和落盘简单
+- 测试更容易做
+- 后续前端和评测系统更容易接
+
+### 3.3 每个任务都是一个独立工作区
+
+每次上传都会生成一个 `task_id`，并在：
 
 ```text
 outputs/tasks/{task_id}/
 ```
 
-这样做的价值是：
+下保存完整产物。这样天然支持：
 
-- 调试更方便
-- 中间结果可回放
-- 便于前端展示
-- 便于未来多个 Agent 通过文件产物协作
+- 调试
+- 断点排查
+- 回放任务过程
+- revision
+- 人审和评测
 
-### 2.4 渐进扩展而不是推倒重来
+### 3.4 渐进式升级
 
-当前版本虽然还没接入真正的 Planner/Review/Revision/RAG 闭环，但架构上已经预留接口和目录位置，后续扩展时不需要重写整套工程。
+很多能力当前虽然还是 stub，但已经不是“以后重写”的占位逻辑，而是“接口与上下文已经先接入”的可升级结构。典型例子：
 
----
-
-## 3. 当前能力边界
-
-### 已实现能力
-
-- 上传 `.mp4` / `.mov` / `.mkv`
-- 接收剪辑请求参数
-- 使用 `moviepy` 读取视频元信息
-- 使用 `mock` ASR 跑通完整转写流程
-- 基于规则法生成高光候选
-- 生成真实可执行的 `EditingPlan`
-- 按时间轴裁剪并合并视频
-- 生成 `.srt` 字幕
-- 可选烧录字幕视频
-- 生成 `ExecutionReport`
-- 生成 `TaskResult`
-- 提供任务查询和任务列表接口
-
-### 尚未完全实现的能力
-
-- 真实 Whisper / faster-whisper 转写
-- 更高级的视频理解和镜头分析
-- Review Agent 的真实质量检查
-- Revision Agent 自动修订
-- RAG 对平台规则和剪辑模板的动态注入
-- 标题文案、封面文案、平台适配导出
+- `video_understanding_agent`
+- `planner_memory`
+- `retrieved_context`
+- `revision_agent`
 
 ---
 
-## 4. 项目目录结构
+## 4. 系统总览
+
+可以把当前系统看成 7 层：
+
+1. `api`
+2. `core`
+3. `agents`
+4. `tools`
+5. `schemas`
+6. `storage`
+7. `rag`
+
+它们的关系是：
 
 ```text
-ClipPilot/
-|-- main.py
-|-- config.yaml
-|-- requirements.txt
-|-- README.md
-|-- ARCHITECTURE.md
-|-- pytest.ini
-|-- .gitignore
-|-- clippilot/
-|   |-- __init__.py
-|   |-- api/
-|   |   |-- __init__.py
-|   |   `-- app.py
-|   |-- core/
-|   |   |-- __init__.py
-|   |   |-- exceptions.py
-|   |   |-- states.py
-|   |   |-- task_context.py
-|   |   `-- workflow.py
-|   |-- schemas/
-|   |   |-- __init__.py
-|   |   |-- agent_trace.py
-|   |   |-- editing_plan.py
-|   |   |-- execution_report.py
-|   |   |-- review_report.py
-|   |   |-- task_result.py
-|   |   |-- transcript.py
-|   |   |-- user_request.py
-|   |   `-- video_info.py
-|   |-- tools/
-|   |   |-- __init__.py
-|   |   |-- audio_extract.py
-|   |   |-- export.py
-|   |   |-- highlight.py
-|   |   |-- scene_detect.py
-|   |   |-- subtitle.py
-|   |   |-- transcribe.py
-|   |   |-- video_cut.py
-|   |   |-- video_info.py
-|   |   `-- video_merge.py
-|   |-- storage/
-|   |   |-- __init__.py
-|   |   |-- json_io.py
-|   |   |-- path_manager.py
-|   |   `-- task_storage.py
-|   |-- harness/
-|   |   |-- __init__.py
-|   |   |-- eval_metrics.py
-|   |   |-- trace_logger.py
-|   |   `-- validators.py
-|   |-- agents/
-|   |   |-- __init__.py
-|   |   |-- executor_agent.py
-|   |   |-- planner_agent.py
-|   |   |-- review_agent.py
-|   |   |-- revision_agent.py
-|   |   `-- video_understanding_agent.py
-|   `-- rag/
-|       |-- __init__.py
-|       |-- build_index.py
-|       |-- retrieve.py
-|       `-- knowledge/
-|           |-- editing_templates.md
-|           |-- platform_rules.md
-|           |-- subtitle_rules.md
-|           `-- title_templates.md
-|-- data/
-|   `-- raw_videos/
-|-- outputs/
-|   `-- tasks/
-`-- tests/
+HTTP Request
+   -> api
+   -> core.workflow
+   -> agents + tools
+   -> storage
+   -> HTTP Response
+```
+
+更细一点可以理解为：
+
+```text
+API 负责进入系统
+Core 负责组织阶段
+Agents 负责高层决策
+Tools 负责原子媒体处理
+Schemas 负责数据形状
+Storage 负责目录与落盘
+RAG 负责规则上下文
 ```
 
 ---
 
-## 5. 模块边界说明
+## 5. 一次任务如何流转
 
-## 5.1 `clippilot/api/`
+当前主流程的真实入口是 `clippilot/core/workflow.py`。
+
+### 5.1 阶段顺序
+
+一次上传任务当前按下面顺序执行：
+
+1. 创建 `TaskContext`
+2. 保存原视频
+3. 提取视频元信息并校验
+4. 抽取音频
+5. 执行转写
+6. 检索规则上下文
+7. 执行视频理解
+8. 生成规则式高光候选
+9. 生成 `EditingPlan`
+10. 执行 `EditingPlan`
+11. 生成 `ReviewReport`
+12. 写入任务最终状态与产物清单
+
+### 5.2 阶段之间靠什么传数据
+
+主要靠三类东西：
+
+- `TaskContext`
+- `ProjectState`
+- 各种结构化 artifact
+
+这三者的分工是：
+
+- `TaskContext`：运行态上下文，负责状态、trace、artifact 注册
+- `ProjectState`：任务级共享状态，负责让后续 agent 看到前序分析结果
+- Artifact 文件：负责调试、回放、跨阶段持久化
+
+### 5.3 为什么同时要有内存态和落盘态
+
+因为这个项目不是只求“这次跑完”，而是要支持后续这些需求：
+
+- 任务复查
+- revision 重规划
+- 人工审核
+- 评测回放
+- 前端展示
+
+所以当前架构有意识地保留了很多中间产物。
+
+---
+
+## 6. 关键数据对象
+
+### 6.1 `UserRequest`
+
+代表用户意图，包括：
+
+- `target_platform`
+- `target_duration`
+- `edit_style`
+- `language`
+- `need_burn_subtitle`
+
+这是整个任务的最初约束来源。
+
+### 6.2 `VideoInfo`
+
+代表源视频元信息，包括：
+
+- 时长
+- 分辨率
+- fps
+- 是否有音轨
+- 文件大小
+
+它既用于校验，也用于 review。
+
+### 6.3 `TranscriptResult`
+
+代表 ASR 输出，包括：
+
+- 分段 transcript
+- 完整文本
+- provider
+
+它是后续几乎所有规划逻辑的底座。
+
+### 6.4 `FineGrainedUnit`
+
+这是当前架构升级里很重要的一层。
+
+它不是原始 transcript segment，而是更适合编辑的细粒度单元，带有：
+
+- 前后停顿信息
+- 关键词
+- emphasis score
+- 可作为 cut boundary 的语义信息
+
+它的作用是把“ASR 文本”进一步转成“可剪辑单位”。
+
+### 6.5 `VideoTimeline`
+
+代表 `video_understanding_agent` 产出的粗粒度语义时间线。
+
+当前它还是 transcript-backed stub，但接口形状已经是为未来真实多模态理解准备的。
+
+### 6.6 `HighlightCandidatesResult`
+
+这是规则法生成的 baseline 候选池。它仍然重要，因为：
+
+- 可作为 planner fallback
+- 可对比未来 LLM candidate 的收益
+- 在模型不可用时可保证链路继续跑
+
+### 6.7 `EditingPlan`
+
+当前的 `EditingPlan` 已不是旧版的简单 clip list，而是更接近“可执行时间线”：
+
+- `beats`
+- `timeline_items`
+- `editing_notes`
+- `warnings`
+- `strategy`
+- `generation_mode`
+- `plan_version`
+
+这是当前系统最核心的计划产物。
+
+### 6.8 `ExecutionReport`
+
+代表 executor 的真实执行结果，包括：
+
+- 每个 timeline item 的执行情况
+- 最终视频路径
+- 字幕路径
+- 烧录版本路径
+- warnings
+- errors
+
+### 6.9 `ReviewReport`
+
+代表输出质量检查结果。它现在已经不是空壳，会检查：
+
+- 最终视频是否存在
+- 文件是否非空
+- 时长是否接近目标
+- 字幕文件是否存在
+- timeline item 时间是否合法
+- 字幕长度是否合理
+- 执行是否报错
+
+---
+
+## 7. 模块边界
+
+## 7.1 `clippilot/api/`
 
 ### 职责
 
-`api` 层是整个系统的 HTTP 边界。
+- 接受 HTTP 请求
+- 解析上传文件和表单字段
+- 组装 `UserRequest`
+- 调用工作流或 revision
+- 把领域错误转成 HTTP 错误
 
-当前核心文件：
+### 不负责
 
-- `app.py`
+- 不直接处理视频
+- 不自己拼接任务目录
+- 不写业务编排逻辑
 
-当前提供的接口：
+### 当前接口
 
 - `GET /health`
 - `GET /api/v1/tasks`
 - `GET /api/v1/tasks/{task_id}`
 - `POST /api/v1/tasks/upload`
-
-### 应该做什么
-
-- 接收上传文件和表单字段
-- 将输入组装为 `UserRequest`
-- 调用 `run_stage1_workflow()`
-- 将领域异常映射为 HTTP 错误
-
-### 不应该做什么
-
-- 不直接做视频处理
-- 不直接实现 ASR
-- 不直接拼装复杂文件路径
-- 不在路由里写长业务流程
+- `POST /api/v1/tasks/{task_id}/revise`
 
 ---
 
-## 5.2 `clippilot/core/`
+## 7.2 `clippilot/core/`
 
-`core` 是业务编排层。
+这是整个系统的编排层。
 
-### `workflow.py`
+### 核心职责
 
-负责串联主流程：
+- 决定阶段顺序
+- 维护状态机
+- 连接 agents 和 tools
+- 维护任务级上下文
+- 负责最终状态落盘
 
-1. 创建任务上下文
-2. 保存源视频
-3. 提取视频元信息
-4. 执行 ASR
-5. 生成高光候选
-6. 生成剪辑时间轴
-7. 执行真实视频裁剪、合并、字幕生成、烧录
-8. 生成审核报告
-9. 保存任务结果和产物清单
+### 关键文件
 
-### `task_context.py`
+- `workflow.py`
+- `task_context.py`
+- `states.py`
+- `exceptions.py`
+- `memory_manager.py`
+- `context_builder.py`
 
-负责保存运行中的任务上下文，典型字段包括：
+### 设计判断
 
-- `task_id`
-- `request`
-- `paths`
-- `status`
-- `stage`
-- `artifacts`
-- `traces`
-
-### `states.py`
-
-统一维护任务状态和阶段名，例如：
-
-- `pending`
-- `processing`
-- `completed`
-- `failed`
-
-以及：
-
-- `uploaded`
-- `transcribed`
-- `editing_plan_generated`
-- `execution_report_generated`
-
-### `exceptions.py`
-
-统一定义领域异常：
-
-- `ClipPilotValidationError`
-- `ClipPilotProcessingError`
-- `ClipPilotStorageError`
-
-### 核心边界
-
-应该做什么：
-
-- 编排阶段顺序
-- 控制状态推进
-- 调度 tools 和 agents
-
-不应该做什么：
-
-- 不直接实现媒体底层处理逻辑
-- 不直接依赖 FastAPI
+如果你想改“任务整体怎么跑”，优先看 `core`。
+如果你想改“某一步具体怎么做”，优先看 `agents` 或 `tools`。
 
 ---
 
-## 5.3 `clippilot/schemas/`
+## 7.3 `clippilot/agents/`
 
-`schemas` 负责定义结构化数据契约。
+这里放“高层决策逻辑”，不是纯媒体原子能力。
 
-### 关键模型
+### `video_understanding_agent.py`
 
-- `UserRequest`
-- `VideoInfo`
-- `TranscriptResult`
-- `HighlightCandidate`
-- `EditingClip`
-- `EditingPlan`
-- `ExecutionClipResult`
-- `ExecutionReport`
-- `TaskResult`
+职责：
 
-### 当前重点 Schema
+- 生成 timeline
+- 生成 LLM-style highlight candidates
+- 准备未来真实视频理解模型的请求契约
 
-#### `EditingPlan`
+当前状态：
 
-当前已经是“可执行时间轴”而不是占位结构，至少包含：
-
-- `task_id`
-- `target_duration`
-- `total_duration`
-- `clips`
-- `editing_notes`
-- `warnings`
-
-每个 `clip` 至少包含：
-
-- `clip_id`
-- `source_start`
-- `source_end`
-- `duration`
-- `purpose`
-- `text`
-- `subtitle`
-- `score`
-- `reason`
-
-#### `ExecutionReport`
-
-当前记录真实执行结果，至少包含：
-
-- `task_id`
-- `status`
-- `clip_results`
-- `final_video_path`
-- `subtitle_path`
-- `burned_video_path`
-- `warnings`
-- `errors`
-
-### 边界要求
-
-应该做什么：
-
-- 定义字段和类型
-- 做结构级校验
-
-不应该做什么：
-
-- 不实现业务流程
-- 不做文件读写
-- 不做媒体处理
-
----
-
-## 5.4 `clippilot/tools/`
-
-`tools` 是原子能力层，强调“可复用、可单测、输入输出清晰”。
-
-### 已实现的关键工具
-
-#### `video_info.py`
-
-负责：
-
-- 校验视频扩展名
-- 提取视频元信息
-- 校验时长区间
-
-#### `transcribe.py`
-
-负责：
-
-- 选择 ASR provider
-- 输出 `TranscriptResult`
-
-#### `highlight.py`
-
-负责：
-
-- 合并 transcript 片段
-- 规则法打分
-- 输出候选高光
-
-#### `video_cut.py`
-
-负责：
-
-- 使用 `ffmpeg subprocess` 裁剪单个 clip
-- 校验 `start_time` / `end_time`
-- 返回结构化 `VideoCutResult`
-
-#### `video_merge.py`
-
-负责：
-
-- 使用 `ffmpeg concat demuxer` 合并多个 clip
-- 自动生成临时 `concat_list.txt`
-- 返回结构化 `VideoMergeResult`
-
-#### `subtitle.py`
-
-负责：
-
-- 根据 `EditingPlan` 生成新视频时间轴下的 `.srt`
-- 提供 `seconds_to_srt_time()`
-- 使用 `ffmpeg` 烧录字幕
-
-### `tools` 边界要求
-
-应该做什么：
-
-- 实现明确的媒体处理步骤
-- 接收确定输入并给出确定输出
-
-不应该做什么：
-
-- 不依赖 FastAPI
-- 不写死任务目录
-- 不管理整条任务生命周期
-
----
-
-## 5.5 `clippilot/storage/`
-
-`storage` 负责持久化与路径规范。
-
-### `path_manager.py`
-
-统一负责：
-
-- 加载 `config.yaml`
-- 构建任务路径
-
-当前每个任务除了基础目录外，还会生成：
-
-- `clips_dir`
-- `final_dir`
-- `final_video_path`
-- `subtitle_path`
-- `burned_video_path`
-
-### `task_storage.py`
-
-负责：
-
-- 生成 `task_id`
-- 创建任务目录
-- 保存源视频
-- 保存 JSON 产物
-- 读取任务结果和产物清单
-
-### `json_io.py`
-
-负责最底层 JSON 读写。
-
-### 边界要求
-
-应该做什么：
-
-- 统一路径规则
-- 统一 JSON 落盘
-- 统一任务目录创建
-
-不应该做什么：
-
-- 不写业务规则
-- 不直接控制 workflow 顺序
-
----
-
-## 5.6 `clippilot/harness/`
-
-`harness` 负责校验和可观测性。
-
-### `validators.py`
-
-当前用于：
-
-- transcript 非空校验
-- candidates 非空校验
-- 输出文件存在校验
-
-### `trace_logger.py`
-
-负责记录结构化流程日志，当前每个任务会保存：
-
-- `workflow_trace.jsonl`
-
-### `eval_metrics.py`
-
-当前为预留模块，用于后续引入质量评估指标。
-
----
-
-## 5.7 `clippilot/agents/`
-
-这是当前最关键的智能工作流层。
+- 已接入主流程
+- 当前输出仍是 stub
 
 ### `planner_agent.py`
 
-当前已升级为真实剪辑时间轴规划器，负责：
+职责：
 
-- 按 score 选候选
-- 优先选 hook 开头
-- 控制总时长不超过目标 + 5 秒
-- 去重重复文本
-- 候选不足时从 transcript 补片段
+- 整合 timeline、候选、RAG、planner memory
+- 生成 `EditingPlan`
+- 保持目标时长、hook、ending、去重、candidate 选择等规则
+
+当前状态：
+
+- 已接入主流程
+- 已从旧 clip list 升级为 `beats + timeline_items`
+- 已准备未来真实 Qwen planner 请求结构
 
 ### `executor_agent.py`
 
-当前已升级为真实视频执行器，负责：
+职责：
 
-1. 根据 `editing_plan.clips` 逐段裁剪
-2. 保存 clip 到 `outputs/tasks/{task_id}/clips/`
-3. 合并为 `final/final_video.mp4`
-4. 生成 `final/subtitles.srt`
-5. 可选生成 `final/final_video_burned.mp4`
-6. 输出 `ExecutionReport`
+- 把 `EditingPlan` 变成真实媒体产物
+- 支持单段 cut 与 montage 组装
+- 合并视频
+- 生成字幕
+- 可选烧录字幕
+
+当前状态：
+
+- 已真实执行
+- 是最接近“生产动作”的模块
 
 ### `review_agent.py`
 
-当前仍是占位审核器，后续可升级为：
+职责：
 
-- 输出文件存在性检查
-- 时长和目标时长偏差检查
-- 字幕一致性检查
-- 平台规则检查
+- 对最终产物进行结构化质量检查
+- 输出 `passed / score / checks / suggestions`
+
+当前状态：
+
+- 已有真实检查逻辑
+- 但还不算最终版质量体系
 
 ### `revision_agent.py`
 
-当前仅预留模块，后续可基于 `ReviewReport` 自动修订 `EditingPlan`。
+职责：
+
+- 根据用户反馈修改 planner memory
+- 生成新的 `EditingPlan`
+- 保留 plan version 历史
+
+当前状态：
+
+- 已有 API 与核心逻辑
+- 目前只做到“重规划”，还没有自动重新执行 executor 和 review
 
 ---
 
-## 5.8 `clippilot/rag/`
+## 7.4 `clippilot/tools/`
 
-当前尚未接入主流程，但已预留目录和知识文件，用于未来给 Planner / Review 提供：
+这里放“明确输入、明确输出”的原子能力。
 
-- 平台规则
-- 剪辑模板
-- 字幕规则
-- 标题模板
+典型模块：
 
----
+- `video_info.py`
+- `audio_extract.py`
+- `transcribe.py`
+- `highlight.py`
+- `video_cut.py`
+- `video_merge.py`
+- `subtitle.py`
 
-## 6. 当前主数据流
+判断原则：
 
-当前系统的核心数据流如下：
-
-1. 用户提交上传请求
-2. `api` 组装 `UserRequest`
-3. `workflow` 创建 `TaskContext`
-4. `storage` 保存源视频
-5. `tools.video_info` 输出 `VideoInfo`
-6. `tools.transcribe` 输出 `TranscriptResult`
-7. `tools.highlight` 输出 `HighlightCandidatesResult`
-8. `agents.planner_agent` 输出 `EditingPlan`
-9. `agents.executor_agent` 输出 `ExecutionReport`
-10. `agents.review_agent` 输出 `ReviewReport`
-11. `storage` 保存全部产物
-12. `api` 返回 `TaskResult`
-
-可以概括为：
-
-`API 接请求 -> Workflow 编排 -> Tools / Agents 执行 -> Storage 落盘 -> API 返回结果`
+- 如果逻辑偏媒体处理、易复用、可单测，放 `tools`
+- 如果逻辑偏策略决策、依赖多个上下文，放 `agents`
 
 ---
 
-## 7. 当前任务目录与产物
+## 7.5 `clippilot/storage/`
 
-每个任务的主产物目录是：
+这是任务工作区和 artifact 的管理层。
+
+### 职责
+
+- 统一路径生成
+- 创建任务目录
+- JSON 落盘
+- 读取任务结果
+- 列出历史任务
+
+### 为什么它重要
+
+这个项目很多“工程感”其实都来自 `storage`：
+
+- 任务目录结构稳定
+- artifact 路径统一
+- revision 可以回到旧任务继续工作
+
+---
+
+## 7.6 `clippilot/schemas/`
+
+这是系统的数据契约层。
+
+它的目标是：
+
+- 让跨模块交互更明确
+- 让落盘与回读更稳定
+- 让接口升级更可控
+
+当前一次显著架构升级，就是从旧的 `EditingClip` 思路迁移到新的 `TimelineItem` 思路。也正因为 schema 变了，部分老测试需要一起迁移。
+
+---
+
+## 7.7 `clippilot/rag/`
+
+RAG 当前的角色不是“主模型问答”，而是给 planner/review 提供策略上下文。
+
+### 当前知识来源
+
+- `platform_rules.md`
+- `subtitle_rules.md`
+- `editing_templates.md`
+- `title_templates.md`
+
+### 当前处理链
+
+1. 读取 markdown 知识文件
+2. chunking
+3. BM25 检索
+4. 可选 dense retrieval
+5. metadata rerank
+6. weighted fusion
+7. 输出 `RetrievedContext`
+
+### 当前状态
+
+- 检索入口已接入 workflow
+- 没有 dense index 也可以退化运行
+- 更像策略增强层，而不是内容主生成层
+
+---
+
+## 8. 任务目录结构
+
+当前单任务目录大致如下：
 
 ```text
 outputs/tasks/{task_id}/
 |-- input/
-|   `-- source.mp4
+|-- audio/
 |-- metadata/
-|   `-- video_info.json
 |-- transcript/
-|   `-- transcript.json
+|-- understanding/
 |-- highlights/
-|   `-- candidates.json
 |-- clips/
-|   |-- clip_01.mp4
-|   |-- clip_02.mp4
-|   `-- ...
 |-- final/
-|   |-- final_video.mp4
-|   |-- subtitles.srt
-|   `-- final_video_burned.mp4
 |-- plan/
-|   |-- editing_plan.json
-|   `-- execution_report.json
+|   `-- versions/
 |-- review/
-|   `-- review_report.json
 |-- trace/
-|   `-- workflow_trace.jsonl
-|-- artifact_manifest.json
-`-- task_result.json
+|-- project_state.json
+|-- task_result.json
+`-- artifact_manifest.json
 ```
 
-### 关键产物说明
+各目录职责：
 
-- `editing_plan.json`
-  - 真实剪辑时间轴
-- `execution_report.json`
-  - 真实执行报告，包含每段裁剪结果和最终视频产物路径
-- `subtitles.srt`
-  - 按新视频时间轴生成的字幕文件
-- `final_video.mp4`
-  - 最终合并视频
-- `final_video_burned.mp4`
-  - 烧录字幕后的视频
-
----
-
-## 8. 当前状态机
-
-当前 workflow 阶段包括：
-
-1. `created`
-2. `uploaded`
-3. `video_info_extracted`
-4. `transcribed`
-5. `highlight_candidates_generated`
-6. `editing_plan_generated`
-7. `execution_report_generated`
-8. `review_report_generated`
-9. `completed`
-
-任务状态包括：
-
-- `pending`
-- `processing`
-- `completed`
-- `failed`
-
-说明：
-
-- 如果执行阶段真正失败，任务最终状态可能是 `failed`
-- 即使失败，也会尽量保留可用的中间产物和错误信息
+- `input/`：原始上传视频
+- `audio/`：抽取后的音频
+- `metadata/`：视频元信息
+- `transcript/`：ASR 结果
+- `understanding/`：timeline、retrieved context、retrieval trace
+- `highlights/`：规则法候选
+- `clips/`：timeline item 渲染出的中间片段
+- `final/`：最终视频与字幕
+- `plan/`：editing plan、planner memory、execution report、versioned plan
+- `review/`：review report
+- `trace/`：工作流 trace
 
 ---
 
-## 9. 配置策略
+## 9. 状态、追踪与可观测性
 
-当前配置来源于：
+当前系统的可观测性主要来自三部分：
 
-- `config.yaml`
-- 环境变量
+### 9.1 `task_result.json`
 
-当前关键配置包括：
+给外部接口和任务查询使用，体现用户视角的任务结果。
 
-- 应用基本信息
-- 任务主目录
-- 原始测试视频目录
-- 视频格式限制
-- 视频时长限制
-- ASR provider
-- Whisper 模型名
-- 高光候选时长范围
+### 9.2 `artifact_manifest.json`
 
-配置原则：
+记录当前任务有哪些产物、它们属于哪个阶段。
 
-- 路径不要硬编码进业务逻辑
-- 模型名不要散落在多个工具函数中
-- 将来 API Key 也应该从环境变量或配置文件读取
+### 9.3 `workflow_trace.jsonl`
+
+按阶段记录结构化 trace，用于回放和排查。
+
+这三者结合起来，能比较清楚地回答：
+
+- 当前任务做到哪一步了
+- 哪一步失败了
+- 失败前已经产出了哪些文件
 
 ---
 
 ## 10. 错误处理策略
 
-当前错误类型包括：
+当前错误主要分三类：
 
 - `ClipPilotValidationError`
-  - 输入非法、时长不符合要求、候选为空等
 - `ClipPilotProcessingError`
-  - 视频裁剪、合并、执行过程中的处理错误
 - `ClipPilotStorageError`
-  - 产物保存或读取失败
 
-处理原则：
+整体原则是：
 
-- tools / agents / workflow 抛领域异常或结构化错误
-- API 层统一转换为 HTTP 响应
-- 执行器尽量将失败写入 `ExecutionReport.errors`，而不是直接让整个流程崩掉
+- 在内部抛领域错误
+- 在 API 层统一转成 HTTP 错误
+- 在 executor / review 尽量保留 warnings 和 errors，而不是一出错就让整个上下文丢失
 
----
-
-## 11. 当前已稳定的能力边界
-
-当前已经相对稳定的边界包括：
-
-- 上传与任务创建
-- 视频元信息提取
-- ASR 抽象
-- 高光候选生成
-- 可执行剪辑计划生成
-- 真实视频执行
-- 字幕生成与烧录
-- 任务结果查询
-- 任务目录与产物管理
+这让失败任务也仍然具备排查价值。
 
 ---
 
-## 12. 后续建议扩展方向
+## 11. 当前技术债和未完成闭环
 
-下一阶段建议优先推进：
+以下是现在最真实的架构缺口：
 
-1. 接入真实 Whisper / faster-whisper
-2. 将高光候选与剪辑计划升级为更强的语义规划
-3. 升级 `review_agent` 为真实质量检查器
-4. 接入 `rag/retrieve.py` 给 Planner / Review 提供规则知识
-5. 接入 `revision_agent` 做自动修订闭环
-6. 增加标题、封面文案、平台适配导出
+### 11.1 测试体系落后于 schema 升级
+
+当前代码已经切换到 `TimelineItem`，但部分测试仍然依赖旧的 `EditingClip`。
+
+### 11.2 revision 不是完整闭环
+
+现在只重生成 plan，没有自动触发后续 executor / review。
+
+### 11.3 视频理解与 planner 仍是“接口先行”
+
+当前 `video_understanding` 和 planner 的真实模型调用尚未接通，现阶段更像：
+
+- 上下文结构已经准备好
+- 真实调用只差 provider 落地
+
+### 11.4 服务执行仍是同步链路
+
+上传接口当前直接同步跑 workflow。对于更长任务、更高并发、更稳定的任务管理，这最终会需要后台队列或异步 job 模型。
 
 ---
 
-## 13. 一句话总结
+## 12. 如何扩展这个项目
 
-当前 `ClipPilot` 的架构可以概括为：
+### 如果你要加新的 ASR provider
 
-- `api` 负责接请求
-- `core` 负责编排
-- `schemas` 负责定义结构
-- `tools` 负责原子媒体处理
-- `agents` 负责规划、执行、审核
-- `storage` 负责任务目录和产物持久化
-- `harness` 负责校验和追踪
-- `rag` 为下一阶段智能增强预留入口
+- 放到 `clippilot/tools/transcribe.py` 或其 provider 子模块
+- 保持 `TranscriptResult` 输出不变
+- 不要把 provider 细节散落到 workflow
 
-这套架构的核心价值是：
+### 如果你要加新的 planner 能力
 
-**当前功能已经可以真实跑通，而且未来继续增强时不需要推倒重来。**
+- 优先改 `planner_agent.py`
+- 需要的新上下文尽量先进入 `ProjectState`
+- 不要让 executor 反向承担 planner 逻辑
+
+### 如果你要加新的审核规则
+
+- 优先改 `review_agent.py`
+- 让每条规则都形成结构化 check
+- 尽量输出 suggestion，方便未来 revision 自动消费
+
+### 如果你要加新的知识库规则
+
+- 放到 `clippilot/rag/knowledge/`
+- 保持 chunking 与 metadata 可被检索策略理解
+
+### 如果你要加新的任务产物
+
+- 先在 `TaskPaths` 中定义路径
+- 再在 `TaskStorage` 中补保存/读取入口
+- 最后在 workflow 中注册 artifact
+
+---
+
+## 13. 下一阶段最合理的演进顺序
+
+从架构角度看，最建议的推进顺序是：
+
+1. 先把测试和文档追平当前 schema
+2. 打通 `revise -> execute -> review`
+3. 接入真实 `faster-whisper`
+4. 接入真实视频理解 provider
+5. 接入真实 planner LLM
+6. 建立评测与质量回归
+7. 再扩展标题、封面、发布文案等外围产物
+
+原因很简单：
+
+- 现在工程骨架已经有了
+- 最缺的是稳定性和闭环
+- 不是继续叠功能名词
+
+---
+
+## 14. 一句话总结
+
+`ClipPilot` 当前的架构核心，不是“模型已经最强”，而是：
+
+**工作流已经成型，任务边界清晰，数据契约稳定，下一阶段可以在不推倒重来的前提下持续增强智能能力。**
